@@ -20,6 +20,7 @@ spec:
     AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider', 'incident-controller',
         'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
         'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
+    AND JSONExtractString(Body, 'type') != 'DELETED'
   interval: 15m
   threshold: 2
   thresholdType: above
@@ -38,6 +39,7 @@ spec:
   where: >-
     ResourceAttributes['k8s.namespace.name'] = 'krateo-system'
     AND ResourceAttributes['telemetry.source'] = 'k8s-events'
+    AND JSONExtractString(Body, 'type') != 'DELETED'
     AND JSONExtractString(Body, 'object', 'reason') = 'BackOff'
     AND positionCaseInsensitive(JSONExtractString(Body, 'object', 'message'), 'restarting failed container') > 0
   interval: 15m
@@ -58,6 +60,7 @@ spec:
   where: >-
     ResourceAttributes['k8s.namespace.name'] = 'krateo-system'
     AND ResourceAttributes['telemetry.source'] = 'k8s-events'
+    AND JSONExtractString(Body, 'type') != 'DELETED'
     AND JSONExtractString(Body, 'object', 'reason') = 'Failed'
     AND positionCaseInsensitive(JSONExtractString(Body, 'object', 'message'), 'failed to pull image') > 0
   interval: 15m
