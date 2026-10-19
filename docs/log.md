@@ -37,3 +37,6 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-10-09
 - A firing an incident covers writes nothing: `status.firings` and `status.lastFiredAt` are gone from the Incident, so an incident whose alert keeps firing is no longer rewritten every pass. The Alert's `status.lastSyncedAt` is gone too: an Alert whose HyperDX state does not change is not rewritten.
+
+## 2026-10-19
+- The seeded alerts skip DELETED watch records: the collector writes one when the apiserver expires an Event, an hour after it, repeating its last state, so each failure fired the alert a second time. Seeding only creates an absent Alert, so an existing one keeps its old `where` until it is edited or deleted and reseeded.

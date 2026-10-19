@@ -48,7 +48,8 @@ config:
   # or SeverityText — this pipeline leaves SeverityText empty). Every `where` is either scoped to the
   # platform namespace (`${NAMESPACE}` is substituted with the release namespace at render time) or
   # excludes the observability stack's own ServiceNames, so an alert never diagnoses the telemetry
-  # pipeline itself. Thresholds are >0 over 15m so transient/rollout blips don't page.
+  # pipeline itself. Thresholds are >0 over 15m so transient/rollout blips don't page. Every `where`
+  # skips DELETED rows, the copy of an expired Event that re-fires the alert an hour later.
   defaultAlerts:
   # The flagship platform-health signal: Krateo control-plane compositions failing to reconcile
   # (controller-runtime's "Reconciler error" log + the provider's CannotObserveExternalResource event),
@@ -64,6 +65,7 @@ config:
       AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider', 'incident-controller',
           'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
           'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
+      AND JSONExtractString(Body, 'type') != 'DELETED'
     interval: 15m
     threshold: 2
     thresholdType: above
@@ -75,6 +77,7 @@ config:
     where: >-
       ResourceAttributes['k8s.namespace.name'] = '${NAMESPACE}'
       AND ResourceAttributes['telemetry.source'] = 'k8s-events'
+      AND JSONExtractString(Body, 'type') != 'DELETED'
       AND JSONExtractString(Body, 'object', 'reason') = 'BackOff'
       AND positionCaseInsensitive(JSONExtractString(Body, 'object', 'message'), 'restarting failed container') > 0
     interval: 15m
@@ -87,6 +90,7 @@ config:
     where: >-
       ResourceAttributes['k8s.namespace.name'] = '${NAMESPACE}'
       AND ResourceAttributes['telemetry.source'] = 'k8s-events'
+      AND JSONExtractString(Body, 'type') != 'DELETED'
       AND JSONExtractString(Body, 'object', 'reason') = 'Failed'
       AND positionCaseInsensitive(JSONExtractString(Body, 'object', 'message'), 'failed to pull image') > 0
     interval: 15m
