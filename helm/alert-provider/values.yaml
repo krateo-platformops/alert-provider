@@ -49,8 +49,7 @@ config:
   # platform namespace (`${NAMESPACE}` is substituted with the release namespace at render time) or
   # excludes the observability stack's own ServiceNames, so an alert never diagnoses the telemetry
   # pipeline itself. Thresholds are >0 over 15m so transient/rollout blips don't page. Every `where`
-  # skips DELETED watch records: the collector writes one when the apiserver expires an Event, an
-  # hour after it, repeating its last state, so counting it fires the alert again for the same failure.
+  # skips DELETED rows, the copy of an expired Event that re-fires the alert an hour later.
   defaultAlerts:
   # The flagship platform-health signal: Krateo control-plane compositions failing to reconcile
   # (controller-runtime's "Reconciler error" log + the provider's CannotObserveExternalResource event),
