@@ -1,7 +1,8 @@
 // Package compare is the incident comparison: which open Incident of an alert, if any, covers the
-// alert's firing now? The writer asks it once per firing (about every 60 s while an alert fires),
-// in one LLM call over all the alert's open, analyzed incidents. This package owns both sides of
-// that exchange so they cannot drift:
+// alert's firing now? The writer asks it in one LLM call over all the alert's open, analyzed
+// incidents, on a firing whose incidents changed or whose records hold one the last answered
+// comparison did not see; any other firing keeps that comparison's verdict. This package owns both
+// sides of that exchange so they cannot drift:
 //
 //   - System and Prompt: the alert, the records it matches now, and each incident's root cause and
 //     howToFix scripts;
@@ -164,6 +165,16 @@ func rowsText(rows []Row) string {
 	return strings.Join(lines, "\n")
 }
 
+// Incidents is the prompt's incidents section, one block per incident in order: what the model
+// reads of them.
+func Incidents(incidents []map[string]any) string {
+	blocks := make([]string, len(incidents))
+	for i, inc := range incidents {
+		blocks[i] = incidentBlock(i+1, inc)
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
 // Prompt is the user message for one firing: incidents are the open, analyzed ones, newest first;
 // rows are the alert's records, the most frequent first. Generic: one prompt serves every alert.
 func Prompt(a Alert, incidents []map[string]any, rows []Row) string {
@@ -182,15 +193,11 @@ func Prompt(a Alert, incidents []map[string]any, rows []Row) string {
 	if thresholdType == "" {
 		thresholdType = "above"
 	}
-	blocks := make([]string, len(incidents))
-	for i, inc := range incidents {
-		blocks[i] = incidentBlock(i+1, inc)
-	}
 	return fmt.Sprintf("Alert \"%s\" counts the log records matching `%s` over the last %s and fires "+
 		"when that count is %s %s.%s\n\n", name, a.Where, interval, thresholdType, a.Threshold, intent) +
 		"It fires now. The records it matches, by count:\n" + rowsText(rows) + "\n\n" +
 		"Its open incidents, newest first:\n\n" +
-		strings.Join(blocks, "\n\n") +
+		Incidents(incidents) +
 		"\n\nAnswer with only a JSON object: " +
 		`{"match": <incident number>, "reason": "<one sentence>"}. "match" is the newest incident ` +
 		"whose root cause produces any of these records, or null when none of them does."

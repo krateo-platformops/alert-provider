@@ -26,7 +26,7 @@ const GeminiOpenAIURL = "https://generativelanguage.googleapis.com/v1beta/openai
 
 var modelConfigGVK = schema.GroupVersionKind{Group: "kagent.dev", Version: "v1alpha2", Kind: "ModelConfig"}
 
-// Comparer is the comparison model: one chat completion per firing, with no agent and no tools.
+// Comparer is the comparison model: one chat completion per comparison, with no agent and no tools.
 type Comparer struct {
 	// Reader reads the ModelConfig and its key Secret, past any cache.
 	Reader client.Reader
