@@ -12,8 +12,9 @@ A controller (not an agent), on Krateo's provider-runtime. The reconciler mirror
 60 s (`config.reconcileInterval`), and each pass that finds it ALERT is one firing. A firing is
 recorded on an `Incident` (`observability.krateo.io/v1alpha1`, the CRD incident-controller ships):
 an open incident of the same problem counts it, or a new incident opens and **incident-agent**
-root-causes it over A2A. One LLM call per firing, on the fleet's model, names the open incident it
-belongs to. Firings
+root-causes it over A2A. One LLM call, on the fleet's model, names the open incident it belongs
+to; a firing with the same incidents and no record the last answered call did not see keeps that
+call's verdict. Firings
 and analyses run off the reconcile thread. HyperDX's webhook (`POST /webhook`) is acked 202 and
 only logged: a HyperDX alert needs a channel, and the reconciler already fires it.
 
@@ -106,7 +107,7 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 
 `internal/compare` holds both sides of it: the prompt and the verdict parser.
 
-- One chat completion per firing, with no agent and no tools, on the model of the kagent
+- One chat completion per comparison, with no agent and no tools, on the model of the kagent
   ModelConfig `config.compareModelConfig` (default `gemini-flash`): provider OpenAI at its
   `baseUrl` (behind the agentgateway, its `/llm/v1` route, keyed by the service JWT under
   `apiKeyPassthrough`), or provider Gemini with its `apiKeySecret`. It times out after

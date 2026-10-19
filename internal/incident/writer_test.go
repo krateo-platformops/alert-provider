@@ -319,6 +319,67 @@ func TestOnlyTheNewestCandidatesAreCompared(t *testing.T) {
 	}
 }
 
+func TestAFiringWithNoNewRecordKeepsTheLastVerdict(t *testing.T) {
+	c := newCase(t)
+	c.analyzed(alertName+"-x", "", "")
+	c.match = alertName + "-x"
+	c.records = []compare.Row{{Record: "a", Count: 2}, {Record: "b", Count: 1}}
+	c.fire(fireOpt{})
+	c.records = []compare.Row{{Record: "a", Count: 5}, {Record: "b", Count: 1}} // a count changed
+	c.fire(fireOpt{})
+	c.records = []compare.Row{{Record: "a", Count: 5}} // b left the window
+	c.fire(fireOpt{})
+	eq(t, "compared", len(c.compared), 1)
+	eq(t, "covered", c.took(alertName+"-x"), 3)
+}
+
+func TestANewRecordIsCompared(t *testing.T) {
+	c := newCase(t)
+	c.analyzed(alertName+"-x", "", "")
+	c.match = alertName + "-x"
+	c.records = []compare.Row{{Record: "a", Count: 2}}
+	c.fire(fireOpt{})
+	c.records = []compare.Row{{Record: "a", Count: 2}, {Record: "c", Count: 1}}
+	c.fire(fireOpt{})
+	eq(t, "compared", len(c.compared), 2)
+}
+
+func TestChangedIncidentsAreCompared(t *testing.T) {
+	c := newCase(t)
+	c.analyzed(alertName+"-x", "", "")
+	c.match = alertName + "-x"
+	c.fire(fireOpt{})
+	c.analyzed(alertName+"-x", "", "Verifying") // the same incident in another state
+	c.fire(fireOpt{})
+	c.analyzed(alertName+"-y", "2026-09-25T11:00:00Z", "") // one more candidate
+	c.fire(fireOpt{})
+	eq(t, "compared", len(c.compared), 3)
+}
+
+func TestAFailedComparisonIsNotKept(t *testing.T) {
+	c := newCase(t)
+	c.analyzed(alertName+"-x", "", "")
+	c.matchErr = &compare.NoVerdict{Reason: "the call failed: timeout"}
+	c.fire(fireOpt{})
+	c.matchErr = nil
+	c.match = alertName + "-x"
+	c.fire(fireOpt{})
+	c.fire(fireOpt{})
+	eq(t, "compared", len(c.compared), 2)
+	eq(t, "covered", c.took(alertName+"-x"), 2)
+}
+
+func TestAKeptNoMatchStillLetsAnUnanalyzedIncidentCover(t *testing.T) {
+	c := newCase(t)
+	c.analyzed(alertName+"-x", "", "")
+	c.rcaErr = errors.New("read timed out") // the new incident is held, not compared
+	c.fire(fireOpt{})
+	eq(t, "incidents", c.kube.count(), 2)
+	c.fire(fireOpt{})
+	eq(t, "compared", len(c.compared), 1)
+	eq(t, "incidents", c.kube.count(), 2)
+}
+
 func TestUnreadableRecordsAreNoVerdict(t *testing.T) {
 	c := newCase(t)
 	c.analyzed(alertName+"-x", "", "")

@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,9 +84,19 @@ type Writer struct {
 	log     logging.Logger
 	now     func() time.Time
 
-	slots  chan struct{}
-	mu     sync.Mutex
-	firing map[string]bool // namespace/alert pairs with an evaluation in progress
+	slots    chan struct{}
+	mu       sync.Mutex
+	firing   map[string]bool    // namespace/alert pairs with an evaluation in progress
+	verdicts map[string]verdict // namespace/alert: its last comparison the model answered
+}
+
+// verdict is a comparison the model answered: the incidents it weighed, the records it saw, and
+// the incident it named ("" for none).
+type verdict struct {
+	incidents string
+	records   map[string]bool
+	match     string
+	reason    string
 }
 
 // NewWriter returns a Writer.
@@ -104,9 +115,10 @@ func newWriter(cfg Config, kube Kube,
 		cfg.MaxCandidates = 1
 	}
 	return &Writer{cfg: cfg, kube: kube, analyze: analyze, compare: cmp, log: log,
-		now:    func() time.Time { return time.Now().UTC() },
-		slots:  make(chan struct{}, cfg.MaxConcurrentAnalyses),
-		firing: map[string]bool{}}
+		now:      func() time.Time { return time.Now().UTC() },
+		slots:    make(chan struct{}, cfg.MaxConcurrentAnalyses),
+		firing:   map[string]bool{},
+		verdicts: map[string]verdict{}}
 }
 
 // IncidentName is <alert>-<yyyymmdd-hhmmss> of the opening firing, in UTC.
@@ -213,8 +225,9 @@ func (w *Writer) alertIncidents(ctx context.Context, ns, alert string) ([]map[st
 }
 
 // pick is the incident a firing at at counts on, or nil to open a new one. In order:
-//  1. the open incident (any state but Resolved and Closed) with an analysis that one LLM call
-//     names as the cause of the alert's current records, among the newest MaxCandidates;
+//  1. the open incident (any state but Resolved and Closed) with an analysis that the comparison
+//     (see verdict) names as the cause of the alert's current records, among the newest
+//     MaxCandidates;
 //  2. the newest open incident without an analysis: one still Analyzing, or one whose RCA failed
 //     less than FailedAnalysisHold ago. There is nothing to compare with, and a new incident would
 //     rerun the analysis. Past the hold, a failed incident takes no more firings, so a new
@@ -249,13 +262,7 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 			names[i] = str(metadata(c), "name")
 			byName[names[i]] = c
 		}
-		match, reason, err := func() (string, string, error) {
-			r, err := rows()
-			if err != nil {
-				return "", "", err
-			}
-			return w.compare(ctx, compare.Prompt(alert.Alert, candidates, r), names)
-		}()
+		match, reason, err := w.verdict(ctx, ns+"/"+alert.Name, alert, candidates, names, rows)
 		if err != nil {
 			w.log.Info(fmt.Sprintf("[compare] %s/%s vs %d incidents: no verdict (%s)", ns, alert.Name, len(candidates), err))
 			noVerdict = err
@@ -279,6 +286,47 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 		return latest, nil
 	}
 	return nil, noVerdict
+}
+
+// verdict is the comparison of a firing with candidates, named names: the alert's last answered
+// one while it still holds, else one LLM call. It holds while the candidates are the same and every
+// current record was among the ones it saw; a record that left the window since does not void it.
+// Only an answered call is remembered, so a failed one is retried on the next firing.
+func (w *Writer) verdict(ctx context.Context, key string, alert Alert, candidates []map[string]any, names []string,
+	rows func() ([]compare.Row, error)) (string, string, error) {
+	r, err := rows()
+	if err != nil {
+		return "", "", err
+	}
+	incidents := strings.Join(names, "\n") + "\n" + compare.Incidents(candidates)
+	w.mu.Lock()
+	last, ok := w.verdicts[key]
+	w.mu.Unlock()
+	if ok && last.incidents == incidents && seen(last.records, r) {
+		return last.match, "no new record since the last verdict: " + last.reason, nil
+	}
+	match, reason, err := w.compare(ctx, compare.Prompt(alert.Alert, candidates, r), names)
+	if err != nil {
+		return "", "", err
+	}
+	records := make(map[string]bool, len(r))
+	for _, row := range r {
+		records[row.Record] = true
+	}
+	w.mu.Lock()
+	w.verdicts[key] = verdict{incidents: incidents, records: records, match: match, reason: reason}
+	w.mu.Unlock()
+	return match, reason, nil
+}
+
+// seen says every row's record is in records.
+func seen(records map[string]bool, rows []compare.Row) bool {
+	for _, r := range rows {
+		if !records[r.Record] {
+			return false
+		}
+	}
+	return true
 }
 
 // patchStatus merges status into the Incident's status, conditioned on the resourceVersion it was
