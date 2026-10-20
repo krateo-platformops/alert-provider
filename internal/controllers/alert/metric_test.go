@@ -248,3 +248,19 @@ func TestTheCountTautologyDoesNotApplyToALogValue(t *testing.T) {
 	h.pass(2)
 	eq(t, "phase", h.status(budget).Phase, "Synced")
 }
+
+// A standard alert's live tile with no aggFn (as an older writer may have left it) is a count:
+// it is not rewritten.
+func TestAStandardTileWithNoAggFnIsNotRewritten(t *testing.T) {
+	h := newHarness(t, alertCR(k, "where-k", v1alpha1.AlertStatus{}))
+	h.pass(2)
+	live := h.byName()[k]
+	d := h.api.Get("dashboards", live["dashboardId"].(string))
+	tile := d["tiles"].([]any)[0].(map[string]any)
+	sel := tile["config"].(map[string]any)["select"].([]any)[0].(map[string]any)
+	delete(sel, "aggFn")
+	h.api.Put("dashboards", d)
+	h.api.ClearWrites()
+	h.pass(2)
+	eq(t, "writes", nonWebhookWrites(h.api), []hyperdxtest.Write{})
+}
