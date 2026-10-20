@@ -22,6 +22,52 @@ pass (60 s) that finds a HyperDX alert ALERT is a firing of its CR. Each firing 
 logged and lost. Comparing a firing with the alert's open incidents is one call to the model of the kagent
 ModelConfig `config.compareModelConfig`.
 
+## Alert on a metric
+
+An Alert can aggregate a collected metric instead of counting log rows. Name the metric once as a
+`Metric`, then reference it:
+
+```yaml
+apiVersion: observability.krateo.io/v1alpha1
+kind: Metric
+metadata:
+  name: llm-cost-usd
+  namespace: krateo-system
+spec:
+  metricName: agentgateway_gen_ai_client_cost_usd_total
+  type: sum
+  unit: USD
+  description: Cumulative LLM spend per tenant, priced by the agentgateway catalog.
+---
+apiVersion: observability.krateo.io/v1alpha1
+kind: Alert
+metadata:
+  name: llm-budget-acme
+  namespace: krateo-system
+spec:
+  displayName: LLM spend of tenant acme
+  metricRef: {name: llm-cost-usd}
+  aggregation: increase        # a counter's increase over the interval
+  labels: {tenant: acme}       # only this tenant's points
+  interval: 1d
+  threshold: 5
+  thresholdType: above
+  message: Tenant acme spent more than $5 of LLM in a day.
+```
+
+- `aggregation` is how the points over `interval` become the compared value: `avg`, `max`, `min`,
+  `sum`, `p95`, or `increase`. `increase` is a counter's (`type: sum`) increase over the window,
+  with counter resets clamped, so a restarted process neither spikes nor goes negative; it is
+  refused on any other type.
+- `labels` are ANDed attribute matches; keys are attribute names, values are quoted for you.
+- The Metric is read from the Alert's namespace. A missing one, or an aggregation that cannot
+  apply to it, sets `phase: Invalid` and says why.
+- The window is `interval`, at most `1d`: HyperDX evaluates an alert over its interval, so a
+  budget over a longer period is expressed per day.
+- The count rules under `threshold` do not apply: a metric's value can be anything.
+- A metric firing opens no Incident (incidents read log records); its `status.state` is `ALERT`
+  and HyperDX notifies through the webhook.
+
 ## Pause an alert
 
 `krateo.io/paused: "true"` on an `Alert` skips its firings: no incident opens, so no comparison

@@ -59,4 +59,34 @@ func TestTheCRDCarriesEveryField(t *testing.T) {
 			t.Errorf("%s: CRD %v, types %v", c.name, got, want)
 		}
 	}
+	if got, want := keys(props["spec"].Properties["metricRef"].Properties), jsonFields(reflect.TypeOf(MetricRef{})); !reflect.DeepEqual(got, want) {
+		t.Errorf("spec.metricRef: CRD %v, types %v", got, want)
+	}
+}
+
+// TestTheMetricCRDCarriesEveryField holds the hand-written Metric CRD to its type.
+func TestTheMetricCRDCarriesEveryField(t *testing.T) {
+	data, err := os.ReadFile("../../../helm/alert-provider-crds/templates/crd.metric.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatal(err)
+	}
+	if len(crd.Spec.Versions) != 1 || crd.Spec.Versions[0].Name != Version || crd.Spec.Group != Group || crd.Spec.Names.Kind != MetricKind {
+		t.Fatalf("crd %s/%v kind %s", crd.Spec.Group, crd.Spec.Versions, crd.Spec.Names.Kind)
+	}
+	props := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties
+	if got, want := keys(props["spec"].Properties), jsonFields(reflect.TypeOf(MetricSpec{})); !reflect.DeepEqual(got, want) {
+		t.Errorf("spec: CRD %v, types %v", got, want)
+	}
+	// The enum is the controller's contract: MetricSelect refuses 'increase' on anything but sum.
+	var types []string
+	for _, e := range props["spec"].Properties["type"].Enum {
+		types = append(types, strings.Trim(string(e.Raw), `"`))
+	}
+	if want := []string{MetricTypeGauge, MetricTypeSum, MetricTypeHistogram}; !reflect.DeepEqual(types, want) {
+		t.Errorf("type enum %v, want %v", types, want)
+	}
 }

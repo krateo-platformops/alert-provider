@@ -32,6 +32,11 @@ var (
 	AlertGroupVersionKind = SchemeGroupVersion.WithKind(AlertKind)
 )
 
+var (
+	MetricKind             = reflect.TypeOf(Metric{}).Name()
+	MetricGroupVersionKind = SchemeGroupVersion.WithKind(MetricKind)
+)
+
 func init() {
-	SchemeBuilder.Register(&Alert{}, &AlertList{})
+	SchemeBuilder.Register(&Alert{}, &AlertList{}, &Metric{}, &MetricList{})
 }

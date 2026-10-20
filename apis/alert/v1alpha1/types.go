@@ -30,13 +30,46 @@ const (
 	PhaseError = "Error"
 )
 
+// Aggregations of a metric Alert: how its metric's points over the interval become the one value
+// compared with the threshold.
+const (
+	AggregationAvg = "avg"
+	AggregationMax = "max"
+	AggregationMin = "min"
+	AggregationSum = "sum"
+	AggregationP95 = "p95"
+	// AggregationIncrease is a counter's (a sum metric's) increase over the interval, with resets
+	// clamped: a restarted counter neither spikes nor goes negative.
+	AggregationIncrease = "increase"
+)
+
+// MetricRef names the Metric an Alert aggregates, in the Alert's namespace: the controller reads
+// only its own namespace.
+type MetricRef struct {
+	// Name of the Metric.
+	Name string `json:"name"`
+}
+
 // AlertSpec is what to alert on. The CRD (helm/alert-provider-crds) carries the schema.
+//
+// An Alert has one source: it counts log rows (Where) or aggregates a metric (MetricRef), never
+// both.
 type AlertSpec struct {
 	// DisplayName is shown in the portal and in the RCA prompt; metadata.name when empty.
 	DisplayName string `json:"displayName,omitempty"`
 
 	// Where is the ClickHouse SQL boolean expression over the logs source the alert counts.
 	Where string `json:"where,omitempty"`
+
+	// MetricRef is the Metric the alert aggregates, instead of counting log rows.
+	MetricRef *MetricRef `json:"metricRef,omitempty"`
+
+	// Aggregation is how the metric's points over the interval become the compared value.
+	Aggregation string `json:"aggregation,omitempty"`
+
+	// Labels keep only the metric points whose attributes carry these values, e.g.
+	// {tenant: acme}. Metric alerts only.
+	Labels map[string]string `json:"labels,omitempty"`
 
 	// Interval is the evaluation window.
 	Interval string `json:"interval,omitempty"`
@@ -94,6 +127,11 @@ var (
 	_ resource.Managed     = &Alert{}
 	_ resource.ManagedList = &AlertList{}
 )
+
+// IsMetric says the Alert aggregates a metric rather than counting log rows.
+func (mg *Alert) IsMetric() bool {
+	return mg.Spec.MetricRef != nil
+}
 
 // Paused says the Alert's firings are skipped.
 func (mg *Alert) Paused() bool {

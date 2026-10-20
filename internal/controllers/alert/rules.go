@@ -3,9 +3,11 @@ package alert
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
@@ -54,6 +56,52 @@ func Tautology(threshold any, thresholdType string) string {
 		}
 	}
 	return ""
+}
+
+// MetricSelect is the tile select of a metric Alert whose metric is m, or why the pairing is
+// refused. Like Tautology, a refusal is a sentence an operator can act on.
+func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Select, string) {
+	sel := hyperdx.Select{Where: LabelsWhere(spec.Labels), MetricName: m.MetricName, MetricType: m.Type}
+	switch spec.Aggregation {
+	case v1alpha1.AggregationAvg, v1alpha1.AggregationMax, v1alpha1.AggregationMin, v1alpha1.AggregationSum:
+		sel.AggFn = spec.Aggregation
+	case v1alpha1.AggregationP95:
+		sel.AggFn, sel.Level = "quantile", 0.95
+	case v1alpha1.AggregationIncrease:
+		// HyperDX evaluates 'increase' only on a sum: it is the counter's per-row delta, summed.
+		if m.Type != v1alpha1.MetricTypeSum {
+			return hyperdx.Select{}, fmt.Sprintf("aggregation 'increase' needs a sum (counter) metric, and %s is a %s. "+
+				"Use avg, max, min, sum or p95.", m.MetricName, m.Type)
+		}
+		sel.AggFn = "increase"
+	case "":
+		return hyperdx.Select{}, "a metric Alert needs an aggregation: avg, max, min, sum, p95 or increase."
+	default:
+		return hyperdx.Select{}, fmt.Sprintf("aggregation %q is not one of avg, max, min, sum, p95, increase.", spec.Aggregation)
+	}
+	return sel, ""
+}
+
+// LabelsWhere is the SQL filter keeping the metric points whose attributes carry labels, keys in
+// order so the same labels always render the same filter (a reordered filter would be a drift
+// pushed on every pass). Empty labels keep every point.
+func LabelsWhere(labels map[string]string) string {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	terms := make([]string, 0, len(keys))
+	for _, k := range keys {
+		terms = append(terms, fmt.Sprintf("Attributes[%s] = %s", sqlString(k), sqlString(labels[k])))
+	}
+	return strings.Join(terms, " AND ")
+}
+
+// sqlString is s as a ClickHouse string literal: single-quoted, with backslash and quote escaped,
+// so a label value can never close the literal and extend the filter.
+func sqlString(s string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
 }
 
 // OkSince is status.okSince for an Alert whose live state is now state: the time the alert last
