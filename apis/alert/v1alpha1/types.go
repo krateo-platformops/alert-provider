@@ -52,8 +52,8 @@ type MetricRef struct {
 
 // AlertSpec is what to alert on. The CRD (helm/alert-provider-crds) carries the schema.
 //
-// An Alert has one source: it counts log rows (Where) or aggregates a metric (MetricRef), never
-// both.
+// An Alert has one source: log rows (Where) or a metric (MetricRef), never both. Log rows are
+// counted, or, with Value and Aggregation, a value read from each row is aggregated.
 type AlertSpec struct {
 	// DisplayName is shown in the portal and in the RCA prompt; metadata.name when empty.
 	DisplayName string `json:"displayName,omitempty"`
@@ -64,8 +64,14 @@ type AlertSpec struct {
 	// MetricRef is the Metric the alert aggregates, instead of counting log rows.
 	MetricRef *MetricRef `json:"metricRef,omitempty"`
 
-	// Aggregation is how the metric's points over the interval become the compared value.
+	// Aggregation is how the points over the interval (the metric's, or Value's per log row)
+	// become the compared value.
 	Aggregation string `json:"aggregation,omitempty"`
+
+	// Value is a ClickHouse SQL expression read from each log row Where matches, aggregated by
+	// Aggregation instead of counting the rows, e.g. a cost extracted from the row's Body. Log
+	// alerts only.
+	Value string `json:"value,omitempty"`
 
 	// Labels keep only the metric points whose attributes carry these values, e.g.
 	// {tenant: acme}. Metric alerts only.
@@ -128,9 +134,15 @@ var (
 	_ resource.ManagedList = &AlertList{}
 )
 
-// IsMetric says the Alert aggregates a metric rather than counting log rows.
+// IsMetric says the Alert aggregates a metric rather than reading log rows.
 func (mg *Alert) IsMetric() bool {
 	return mg.Spec.MetricRef != nil
+}
+
+// Aggregated says the Alert compares an aggregated value (a metric, or a value read from log
+// rows) rather than a count of log rows.
+func (mg *Alert) Aggregated() bool {
+	return mg.Spec.Aggregation != ""
 }
 
 // Paused says the Alert's firings are skipped.

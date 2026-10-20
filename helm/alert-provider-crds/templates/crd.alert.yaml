@@ -49,8 +49,12 @@ spec:
               x-kubernetes-validations:
                 - rule: "!has(self.metricRef) || self.where == ''"
                   message: "metricRef and where are mutually exclusive: an Alert counts log rows (where) or aggregates a metric (metricRef), never both"
-                - rule: "has(self.metricRef) == has(self.aggregation)"
-                  message: "aggregation is required with metricRef, and only valid with it"
+                - rule: "has(self.aggregation) == (has(self.metricRef) || has(self.value))"
+                  message: "aggregation is required with metricRef or value, and only valid with one of them"
+                - rule: "!(has(self.metricRef) && has(self.value))"
+                  message: "value is read from log rows; a metric alert (metricRef) aggregates the metric itself"
+                - rule: "!has(self.aggregation) || self.aggregation != 'increase' || has(self.metricRef)"
+                  message: "aggregation 'increase' is a counter metric's; it requires metricRef"
                 - rule: "!has(self.labels) || has(self.metricRef)"
                   message: "labels filter a metric's points; they require metricRef"
               properties:
@@ -87,10 +91,19 @@ spec:
                   type: string
                   enum: [avg, max, min, sum, p95, increase]
                   description: >
-                    How the metric's points over the interval become the value compared with the
-                    threshold. 'increase' is a counter's (a sum metric's) increase over the
-                    interval, with counter resets clamped so a restart neither spikes nor goes
-                    negative; it is refused on any other metric type. Metric alerts only.
+                    How the points over the interval become the value compared with the threshold:
+                    the metric's (metricRef), or value's per log row. 'increase' is a counter's (a
+                    sum metric's) increase over the interval, with counter resets clamped so a
+                    restart neither spikes nor goes negative; it is metric-only and refused on any
+                    other metric type.
+                value:
+                  type: string
+                  description: >
+                    A ClickHouse SQL expression read from each log row that where matches,
+                    aggregated by aggregation instead of counting the rows — e.g. a cost extracted
+                    from the row's Body:
+                    toFloat64OrZero(extract(Body, 'agw\\.ai\\.usage\\.cost\\.total=([0-9.]+)')).
+                    Requires aggregation (avg, max, min, sum or p95). Log alerts only.
                 labels:
                   type: object
                   additionalProperties:
@@ -114,9 +127,9 @@ spec:
                     pairings decided before any data is read and rejected by the controller with
                     phase: Invalid: 'above 0' (value >= 0) fires on every evaluation including an
                     empty result, and 'below 0' (value < 0) can never fire at all. Use 1 with
-                    'above' for "at least one", and 1 with 'below' for "none in this window". For a
-                    metric alert (metricRef) the value is the aggregation over the window, in the
-                    metric's unit, and any threshold is accepted.
+                    'above' for "at least one", and 1 with 'below' for "none in this window". For an
+                    aggregated alert (metricRef, or value) the compared value is the aggregation
+                    over the window, in its own unit, and any threshold is accepted.
                 thresholdType:
                   type: string
                   enum: [above, below, above_exclusive, below_or_equal, equal, not_equal, between, not_between]

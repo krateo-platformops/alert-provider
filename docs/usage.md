@@ -22,6 +22,36 @@ pass (60 s) that finds a HyperDX alert ALERT is a firing of its CR. Each firing 
 logged and lost. Comparing a firing with the alert's open incidents is one call to the model of the kagent
 ModelConfig `config.compareModelConfig`.
 
+## Alert on a value from log rows
+
+An Alert can aggregate a value read from each log row instead of counting the rows: set `value`
+(a ClickHouse SQL expression over the row) and `aggregation` (`avg`, `max`, `min`, `sum`, `p95`).
+For example, a tenant's daily LLM spend, from the gateway's access-log lines, which carry their
+cost and the tenant:
+
+```yaml
+apiVersion: observability.krateo.io/v1alpha1
+kind: Alert
+metadata:
+  name: llm-budget-acme
+  namespace: krateo-system
+spec:
+  displayName: LLM spend of tenant acme
+  where: >-
+    ServiceName = 'krateo-gateway' AND Body LIKE '%route=krateo-system/llm%'
+    AND Body LIKE '%tenant="acme"%'
+  value: toFloat64OrZero(extract(Body, 'agw\\.ai\\.usage\\.cost\\.total=([0-9.]+)'))
+  aggregation: sum
+  interval: 1d
+  threshold: 5
+  thresholdType: above
+  message: Tenant acme spent more than $5 of LLM in a day.
+```
+
+- `value` requires `aggregation`, and `increase` is refused (it is a counter metric's).
+- The count rules under `threshold` do not apply, and the firing opens no Incident, as for a
+  metric.
+
 ## Alert on a metric
 
 An Alert can aggregate a collected metric instead of counting log rows. Name the metric once as a

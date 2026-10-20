@@ -58,6 +58,33 @@ func Tautology(threshold any, thresholdType string) string {
 	return ""
 }
 
+// aggFn is the HyperDX aggregate function of an aggregation, or why it is refused: increase is a
+// counter's and is the caller's to allow.
+func aggFn(aggregation string) (string, float64, string) {
+	switch aggregation {
+	case v1alpha1.AggregationAvg, v1alpha1.AggregationMax, v1alpha1.AggregationMin, v1alpha1.AggregationSum:
+		return aggregation, 0, ""
+	case v1alpha1.AggregationP95:
+		return "quantile", 0.95, ""
+	case "":
+		return "", 0, "an aggregated Alert needs an aggregation: avg, max, min, sum or p95 (or increase on a counter metric)."
+	}
+	return "", 0, fmt.Sprintf("aggregation %q is not one of avg, max, min, sum, p95, increase.", aggregation)
+}
+
+// ValueSelect is the tile select of a log Alert that aggregates spec.Value over the rows its
+// where matches, or why it is refused.
+func ValueSelect(spec v1alpha1.AlertSpec) (hyperdx.Select, string) {
+	if spec.Aggregation == v1alpha1.AggregationIncrease {
+		return hyperdx.Select{}, "aggregation 'increase' is a counter metric's; a log value takes avg, max, min, sum or p95."
+	}
+	fn, level, why := aggFn(spec.Aggregation)
+	if why != "" {
+		return hyperdx.Select{}, why
+	}
+	return hyperdx.Select{AggFn: fn, Level: level, Where: spec.Where, ValueExpression: spec.Value}, ""
+}
+
 // MetricSelect is the tile select of a metric Alert whose metric is m, or why the pairing is
 // refused. Like Tautology, a refusal is a sentence an operator can act on.
 func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Select, string) {

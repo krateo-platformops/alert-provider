@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -173,4 +174,77 @@ func TestASwitchBackToWhereRewritesTheTile(t *testing.T) {
 	tile := h.api.TileOf(h.byName()[budget])
 	eq(t, "source", tile["sourceId"], "src-1")
 	eq(t, "select", tile["select"], []any{map[string]any{"aggFn": "count", "where": "", "whereLanguage": "sql"}})
+}
+
+// --- a log Alert can aggregate a value read from each row, not only count rows ---
+
+const (
+	costValue  = `toFloat64OrZero(extract(Body, 'agw\\.ai\\.usage\\.cost\\.total=([0-9.]+)'))`
+	acmeLLMRow = `ServiceName = 'krateo-gateway' AND Body LIKE '%route=krateo-system/llm%' AND Body LIKE '%tenant="acme"%'`
+)
+
+func valueAlertCR(name, aggregation string) *v1alpha1.Alert {
+	return &v1alpha1.Alert{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID("uid-" + name)},
+		Spec: v1alpha1.AlertSpec{Where: acmeLLMRow, Value: costValue, Aggregation: aggregation,
+			Interval: "1d", Threshold: "5", ThresholdType: "above", Message: "m"},
+	}
+}
+
+func TestValueSelectAggregatesTheRowValue(t *testing.T) {
+	sel, why := ValueSelect(valueAlertCR(budget, "sum").Spec)
+	if why != "" {
+		t.Fatal(why)
+	}
+	eq(t, "sum", sel, hyperdx.Select{AggFn: "sum", Where: acmeLLMRow, ValueExpression: costValue})
+	sel, _ = ValueSelect(valueAlertCR(budget, "p95").Spec)
+	eq(t, "p95", fmt.Sprintf("%s/%v", sel.AggFn, sel.Level), "quantile/0.95")
+	if _, why := ValueSelect(valueAlertCR(budget, "increase").Spec); !strings.Contains(why, "counter metric") {
+		t.Errorf("increase on a log value: %q", why)
+	}
+}
+
+func TestALogValueAlertSumsTheValueOverTheLogsSource(t *testing.T) {
+	h := newHarness(t, valueAlertCR(budget, "sum"))
+	h.pass(2)
+	live := h.byName()[budget]
+	if live == nil {
+		t.Fatal("no HyperDX alert")
+	}
+	tile := h.api.TileOf(live)
+	eq(t, "source", tile["sourceId"], "src-1")
+	eq(t, "select", tile["select"], []any{map[string]any{"aggFn": "sum", "valueExpression": costValue,
+		"where": acmeLLMRow, "whereLanguage": "sql"}})
+	eq(t, "phase", h.status(budget).Phase, "Synced")
+	h.api.ClearWrites()
+	h.pass(2)
+	eq(t, "converged", nonWebhookWrites(h.api), []hyperdxtest.Write{})
+}
+
+func TestALogValueFiringOpensNoIncident(t *testing.T) {
+	h := newHarness(t, valueAlertCR(budget, "sum"))
+	h.pass(1)
+	h.api.Set("alerts", h.status(budget).HyperdxAlertID, map[string]any{"state": "ALERT"})
+	h.pass(1)
+	eq(t, "state", h.status(budget).State, "ALERT")
+	eq(t, "fired", h.fired, []string(nil))
+}
+
+// Dropping the aggregation turns the tile back into a row count over the same where.
+func TestASwitchFromValueBackToCountRewritesTheTile(t *testing.T) {
+	h := newHarness(t, valueAlertCR(budget, "sum"))
+	h.pass(2)
+	h.edit(budget, func(a *v1alpha1.Alert) { a.Spec.Aggregation, a.Spec.Value, a.Spec.Threshold = "", "", "1" })
+	h.pass(1)
+	eq(t, "select", h.api.TileOf(h.byName()[budget])["select"],
+		[]any{map[string]any{"aggFn": "count", "where": acmeLLMRow, "whereLanguage": "sql"}})
+}
+
+// The count tautology does not apply to an aggregated value.
+func TestTheCountTautologyDoesNotApplyToALogValue(t *testing.T) {
+	a := valueAlertCR(budget, "sum")
+	a.Spec.Threshold = "0"
+	h := newHarness(t, a)
+	h.pass(2)
+	eq(t, "phase", h.status(budget).Phase, "Synced")
 }

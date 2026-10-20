@@ -215,7 +215,15 @@ func (e *external) refuse(a *v1alpha1.Alert, why string) reconciler.ExternalObse
 // source; a missing Metric, or one its aggregation cannot apply to, is why it is refused.
 func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) {
 	if !a.IsMetric() {
-		e.sel, e.tileSource = hyperdx.CountSelect(a.Spec.Where), e.source
+		if !a.Aggregated() {
+			e.sel, e.tileSource = hyperdx.CountSelect(a.Spec.Where), e.source
+			return "", nil
+		}
+		sel, why := ValueSelect(a.Spec)
+		if why != "" {
+			return why, nil
+		}
+		e.sel, e.tileSource = sel, e.source
 		return "", nil
 	}
 	ref, ns := a.Spec.MetricRef, a.Namespace
@@ -291,9 +299,10 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	// refusing to keep pushing stops the damage.
 	// It is written by Update: a status Observe sets is lost when provider-runtime then adds the
 	// finalizer to a new Alert, which reloads the object.
-	// Only a count is never negative, so the rule holds for log alerts alone: a metric's value can
-	// be anything, and 'above 0' on a gauge is a real question.
-	if !a.IsMetric() {
+	// Only a count is never negative, so the rule holds for counting alerts alone: an aggregated
+	// value (a metric, or a value read from log rows) can be anything, and 'above 0' is a real
+	// question.
+	if !a.Aggregated() {
 		if why := Tautology(threshold(a.Spec), a.Spec.ThresholdType); why != "" {
 			return e.refuse(a, why), nil
 		}
@@ -369,7 +378,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	// would briefly evaluate the new bound over the old one. A log alert compares its `where`; a
 	// metric alert its whole select and source, since a new aggregation or metric is a new query.
 	if e.plan.dashboardID != "" {
-		if a.IsMetric() {
+		if a.Aggregated() {
 			live, liveSrc, found, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 			if err != nil {
 				e.firings.start(a, e.source, st)
@@ -383,11 +392,11 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 				return reconciler.ExternalObservation{}, specDrift(a, e.log, err)
 			}
 			e.plan.where = found && liveWhere != a.Spec.Where
-			// A tile that aggregated a metric (an Alert switched back from metricRef) holds no
-			// `where` to differ: it is rewritten whole.
+			// A tile that aggregated (an Alert switched back to counting) can hold the same
+			// `where`: it is rewritten whole.
 			if found && !e.plan.where {
 				live, _, _, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
-				if err == nil && pyfmt.Truthy(live["metricName"]) {
+				if err == nil && pyfmt.Str(live["aggFn"]) != "count" {
 					e.plan.where = true
 				}
 			}
@@ -574,11 +583,12 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", a.Name))
 		return
 	}
-	// The incident writer compares and root-causes the LOG RECORDS an alert matches; a metric has
-	// none, so it would never reach a verdict and retry forever. A metric firing is the ALERT state
-	// mirrored on the Alert, and HyperDX's notification through the webhook.
-	if a.IsMetric() {
-		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on a metric; no incident (incidents read log records)", a.Name))
+	// The incident writer compares and root-causes the LOG RECORDS an alert counts. A metric has
+	// none, and an aggregated value is not a count (the prompt would describe the wrong
+	// threshold), so an aggregated firing is the ALERT state mirrored on the Alert, and HyperDX's
+	// notification through the webhook.
+	if a.Aggregated() {
+		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", a.Name))
 		return
 	}
 	alert := incident.Alert{Namespace: a.Namespace, Alert: compare.Alert{

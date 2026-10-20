@@ -155,6 +155,9 @@ type Select struct {
 	Where string
 	// MetricName and MetricType name the metric; empty for a log alert.
 	MetricName, MetricType string
+	// ValueExpression is what a log alert aggregates from each row; empty when it counts rows.
+	// A metric is always aggregated over its Value column.
+	ValueExpression string
 	// Level is the quantile level when AggFn is "quantile".
 	Level float64
 }
@@ -171,6 +174,8 @@ func (s Select) item() map[string]any {
 	m := map[string]any{"aggFn": s.AggFn, "where": s.Where, "whereLanguage": "sql"}
 	if s.MetricName != "" {
 		m["metricName"], m["metricType"], m["valueExpression"] = s.MetricName, s.MetricType, "Value"
+	} else if s.ValueExpression != "" {
+		m["valueExpression"] = s.ValueExpression
 	}
 	if s.AggFn == "quantile" {
 		m["level"] = s.Level
