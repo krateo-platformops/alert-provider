@@ -64,6 +64,9 @@ type writerCase struct {
 	answer    string
 	rcaErr    error
 	duringRCA func()
+	// rcaRun, when set, is the answer of the RCA call numbered n from 0, in place of answer and
+	// rcaErr.
+	rcaRun func(n int) (string, error)
 	// compared are the comparison calls; match is the incident it names ("" none), or matchErr.
 	compared [][]string
 	prompts  []string
@@ -87,10 +90,14 @@ func newCase(t *testing.T) *writerCase {
 func (c *writerCase) analyze(_ context.Context, prompt, contextID string) (string, []report.ToolResult, error) {
 	c.mu.Lock()
 	c.rca = append(c.rca, [2]string{prompt, contextID})
-	during := c.duringRCA
+	during, run, n := c.duringRCA, c.rcaRun, len(c.rca)-1
 	c.mu.Unlock()
 	if during != nil {
 		during()
+	}
+	if run != nil {
+		a, err := run(n)
+		return a, nil, err
 	}
 	return c.answer, nil, c.rcaErr
 }
@@ -706,7 +713,7 @@ func TestAtMostMaxConcurrentAnalysesRCAsRunAtOnce(t *testing.T) {
 		name := fmt.Sprintf("%s-%d", alertName, i)
 		c.kube.put(ns, name, alertName, seed{state: "Analyzing"})
 		wg.Add(1)
-		go func() { defer wg.Done(); c.w.RunAnalysis(context.Background(), ns, name, "p") }()
+		go func() { defer wg.Done(); c.w.RunAnalysis(context.Background(), ns, name, "p", name) }()
 	}
 	wg.Wait()
 	eq(t, "peak", peak, 2)

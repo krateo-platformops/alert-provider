@@ -237,6 +237,34 @@ func (f *fakeKube) PatchStatus(_ context.Context, ns, name string, patch map[str
 	return nil
 }
 
+func (f *fakeKube) Patch(_ context.Context, ns, name string, patch map[string]any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("PATCH-OBJECT", ns, name, patch)
+	if f.fail != nil {
+		return f.fail
+	}
+	obj, ok := f.incidents[ns+"/"+name]
+	if !ok {
+		return apierrors.NewNotFound(incidentsGR, name)
+	}
+	body := clone(patch)
+	delete(body, "status")
+	delete(body, "metadata")
+	merge(obj, body)
+	f.bump(obj)
+	return nil
+}
+
+// writeSpec is a spec write by another client (a human).
+func (f *fakeKube) writeSpec(ns, name string, spec map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	obj := f.incidents[ns+"/"+name]
+	merge(obj["spec"].(map[string]any), spec)
+	f.bump(obj)
+}
+
 // only is the one Incident in ns.
 func (f *fakeKube) only(ns string) map[string]any {
 	f.mu.Lock()

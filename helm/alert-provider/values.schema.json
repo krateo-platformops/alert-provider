@@ -107,8 +107,22 @@
           "type": "integer",
           "minimum": 0,
           "title": "Failed-RCA hold (s)",
-          "description": "Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the failed one stays Open until a person closes it.",
+          "description": "Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the failed one stays Open until a person closes it or asks for a new analysis.",
           "default": 1800
+        },
+        "analysisRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "title": "RCA retries",
+          "description": "How many more times an RCA that failed transiently runs: the call failed (a timeout, a 5xx, a cut stream), the answer was empty, or it was only the model's error. The incident stays Analyzing meanwhile.",
+          "default": 2
+        },
+        "analysisRetryDelay": {
+          "type": "integer",
+          "minimum": 1,
+          "title": "RCA retry delay (s)",
+          "description": "Seconds before the first RCA retry; each next retry waits twice as long.",
+          "default": 120
         },
         "authnUrl": {
           "type": "string",

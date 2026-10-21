@@ -31,6 +31,8 @@ type Kube interface {
 	// PatchStatus merges patch into the Incident's status subresource. A patch whose
 	// metadata.resourceVersion is set is conditioned on it.
 	PatchStatus(ctx context.Context, namespace, name string, patch map[string]any) error
+	// Patch merges patch into the Incident.
+	Patch(ctx context.Context, namespace, name string, patch map[string]any) error
 }
 
 // code is the apiserver status code of err, or 0.
@@ -111,13 +113,29 @@ func (k *kube) Create(ctx context.Context, obj map[string]any) (map[string]any, 
 }
 
 func (k *kube) PatchStatus(ctx context.Context, namespace, name string, patch map[string]any) error {
-	b, err := json.Marshal(patch)
+	u, p, err := mergePatch(namespace, name, patch)
 	if err != nil {
 		return err
+	}
+	return k.client.Status().Patch(ctx, u, p)
+}
+
+func (k *kube) Patch(ctx context.Context, namespace, name string, patch map[string]any) error {
+	u, p, err := mergePatch(namespace, name, patch)
+	if err != nil {
+		return err
+	}
+	return k.client.Patch(ctx, u, p)
+}
+
+func mergePatch(namespace, name string, patch map[string]any) (*unstructured.Unstructured, client.Patch, error) {
+	b, err := json.Marshal(patch)
+	if err != nil {
+		return nil, nil, err
 	}
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(IncidentGVK)
 	u.SetNamespace(namespace)
 	u.SetName(name)
-	return k.client.Status().Patch(ctx, u, client.RawPatch(types.MergePatchType, b))
+	return u, client.RawPatch(types.MergePatchType, b), nil
 }
