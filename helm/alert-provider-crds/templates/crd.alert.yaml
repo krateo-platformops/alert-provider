@@ -57,6 +57,16 @@ spec:
                   message: "aggregation 'increase' is a counter metric's; it requires metricRef"
                 - rule: "!has(self.labels) || has(self.metricRef)"
                   message: "labels filter a metric's points; they require metricRef"
+                # incidents: Auto on an AGGREGATED Alert is refused, not ignored. The incident
+                # writer compares and root-causes the log records an alert COUNTS; an aggregated
+                # value is not a count, so the comparison prompt would describe a threshold that
+                # is not the one that fired, and the RCA would have no records to reason over.
+                # Lifting this needs an evidence source for an aggregated firing -- a metric's
+                # series around the firing, or the rows contributing most to a log value -- which
+                # is the open half of #66. Until then the refusal is at admission, so nobody
+                # discovers it from an incident that never reaches a verdict.
+                - rule: "!has(self.aggregation) || !has(self.incidents) || self.incidents != 'Auto'"
+                  message: "incidents 'Auto' is not supported on an aggregated Alert (metricRef, or value + aggregation): incidents are compared and root-caused from counted log records, which an aggregated firing has none of. Use 'Never', or alert on a count"
               properties:
                 displayName:
                   type: string
@@ -114,6 +124,25 @@ spec:
                   description: >
                     Keep only the metric points whose attributes carry these values, e.g.
                     {tenant: acme}; ANDed together. Metric alerts only.
+                incidents:
+                  type: string
+                  enum: [Auto, Never]
+                  description: >
+                    Whether this Alert's firings open Incidents. `Auto` opens one per firing that
+                    no open incident covers -- what a counting Alert has always done. `Never`
+                    mirrors the ALERT state on the Alert and notifies through the HyperDX webhook,
+                    and opens nothing.
+
+
+                    UNSET IS NOT `Auto`. It keeps the behaviour each kind of Alert already had:
+                    Auto for a counting Alert, Never for an aggregated one. So adding this field
+                    changes nothing for any Alert that already exists.
+
+
+                    `Never` is also how an install WITHOUT the agent tier states its intent
+                    declaratively. The incident path needs a kagent ModelConfig for the comparison
+                    and an RCA agent; where those are absent, Never says so, instead of leaving
+                    every firing's comparison to fail.
                 interval:
                   type: string
                   enum: ["1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d"]

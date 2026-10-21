@@ -98,6 +98,54 @@ spec:
 - A metric firing opens no Incident (incidents read log records); its `status.state` is `ALERT`
   and HyperDX notifies through the webhook.
 
+## Turn incidents off for an alert
+
+An Alert that is a notification rather than a problem to triage sets `spec.incidents: Never`. It
+still syncs to HyperDX, still mirrors `ALERT` on its status, and still notifies through the
+webhook — it just opens no Incident, and nothing is compared or root-caused.
+
+```yaml
+apiVersion: observability.krateo.io/v1alpha1
+kind: Alert
+metadata:
+  name: nightly-export-finished
+  namespace: krateo-system
+spec:
+  where: "ServiceName = 'exporter' AND Body LIKE '%export complete%'"
+  interval: 15m
+  threshold: 1
+  thresholdType: above
+  message: "the nightly export finished"
+  incidents: Never
+```
+
+`Auto` is the other value and opens an Incident per firing that no open incident covers — what a
+counting Alert has always done.
+
+**Leaving the field unset is not `Auto`.** It keeps the behaviour each kind of Alert already had:
+`Auto` for a counting Alert, `Never` for an aggregated one (`metricRef`, or `value` +
+`aggregation`). Adding the field therefore changes nothing for any Alert that already exists.
+
+**`Never` is also how an install without the agent tier says so.** The incident path needs two
+things the alert path does not: a kagent `ModelConfig` for the comparison that decides which open
+incident covers a firing, and an RCA agent. Where those are absent — a portal-only install, for
+instance — `Never` states that intent declaratively, instead of leaving every firing's comparison
+to fail and reading the result as a degradation.
+
+**`Auto` on an aggregated Alert is refused at admission**, with a message, rather than accepted and
+then failing quietly:
+
+```
+incidents 'Auto' is not supported on an aggregated Alert (metricRef, or value + aggregation):
+incidents are compared and root-caused from counted log records, which an aggregated firing has
+none of. Use 'Never', or alert on a count
+```
+
+That refusal is a current limitation, not a design preference. Lifting it needs an evidence source
+for an aggregated firing — a metric's series around the firing with its attributes, or the rows
+contributing most to a log value — so the comparison and RCA prompts describe the aggregate and its
+threshold rather than a row count.
+
 ## Pause an alert
 
 `krateo.io/paused: "true"` on an `Alert` skips its firings: no incident opens, so no comparison

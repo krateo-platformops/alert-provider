@@ -585,12 +585,26 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", a.Name))
 		return
 	}
-	// The incident writer compares and root-causes the LOG RECORDS an alert counts. A metric has
-	// none, and an aggregated value is not a count (the prompt would describe the wrong
-	// threshold), so an aggregated firing is the ALERT state mirrored on the Alert, and HyperDX's
-	// notification through the webhook.
-	if a.Aggregated() {
-		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", a.Name))
+	// ONE gate decides whether a firing reaches the incident writer, and the reason is logged so
+	// an operator is not left inferring it (#66). Two reasons reach the same conclusion and they
+	// must not be two branches: OpensIncidents owns the unset default, so there is a single
+	// predicate rather than one here and another in the API type that can drift apart.
+	//
+	//   incidents: Never  -- the Alert says its firings are a notification, not a problem to
+	//     triage. This is also what an install WITHOUT the agent tier sets: the comparison needs a
+	//     kagent ModelConfig and the RCA needs an agent, and Never states that intent rather than
+	//     letting every firing's comparison fail.
+	//   an aggregated value, with incidents unset -- the incident writer compares and root-causes
+	//     the LOG RECORDS an alert counts. A metric has none, and an aggregated value is not a
+	//     count (the prompt would describe the wrong threshold), so the firing is the ALERT state
+	//     mirrored on the Alert plus HyperDX's webhook notification. Unchanged from #65; the CRD
+	//     refuses incidents: Auto here, so this cannot be overridden into a verdict-less incident.
+	if !a.OpensIncidents() {
+		reason := fmt.Sprintf("incidents: %s", pyfmt.Str(a.Spec.Incidents))
+		if a.Spec.Incidents == "" {
+			reason = "an aggregated value, and incidents default to Never there (incidents read counted log records)"
+		}
+		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires with %s; notified, no incident opened", a.Name, reason))
 		return
 	}
 	alert := incident.Alert{Namespace: a.Namespace, Alert: compare.Alert{

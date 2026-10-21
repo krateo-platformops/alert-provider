@@ -88,6 +88,24 @@ type AlertSpec struct {
 
 	// Message is the notification message.
 	Message string `json:"message,omitempty"`
+
+	// Incidents is whether this Alert's firings open Incidents.
+	//
+	// Auto opens one per firing that no open incident covers, which is what a counting Alert has
+	// always done. Never mirrors the ALERT state on the Alert and notifies through HyperDX's
+	// webhook, and opens nothing.
+	//
+	// UNSET IS NOT "Auto": it keeps the behaviour each kind of Alert already had -- Auto for a
+	// counting Alert, Never for an aggregated one -- so adding this field changes nothing for
+	// any Alert that exists. Read it through OpensIncidents rather than comparing the string.
+	//
+	// Auto on an aggregated Alert is refused by the CRD, not silently ignored: the incident
+	// writer compares and root-causes the LOG RECORDS an alert counts, and an aggregated value is
+	// not a count, so the comparison prompt would describe a threshold that is not the one that
+	// fired. Lifting that refusal needs an evidence source for an aggregated firing (a metric's
+	// series around the firing, or the rows contributing most to a log value), which is the open
+	// half of #66.
+	Incidents string `json:"incidents,omitempty"`
 }
 
 // AlertStatus mirrors the live HyperDX alert.
@@ -143,6 +161,39 @@ func (mg *Alert) IsMetric() bool {
 // rows) rather than a count of log rows.
 func (mg *Alert) Aggregated() bool {
 	return mg.Spec.Aggregation != ""
+}
+
+// IncidentsAuto and IncidentsNever are the values of Alert.Spec.Incidents. The zero value is
+// neither: see OpensIncidents.
+const (
+	IncidentsAuto  = "Auto"
+	IncidentsNever = "Never"
+)
+
+// OpensIncidents says whether a firing of this Alert should reach the incident writer.
+//
+// It is the ONE place the unset default is decided, so that "unset" cannot mean different things
+// in different callers:
+//
+//	Never            -> false, always.
+//	Auto             -> true. The CRD refuses Auto on an aggregated Alert, so this does not
+//	                    silently enable an incident the writer has no evidence for.
+//	unset ("")       -> !Aggregated(): true for a counting Alert, false for an aggregated one.
+//	                    That is exactly the behaviour both kinds had before this field existed.
+//
+// It deliberately says nothing about whether the incident path CAN run -- a missing kagent
+// ModelConfig makes the comparison fail, which is a different problem from an Alert that is not
+// meant to open incidents. Never is how an install without the agent tier says so declaratively
+// instead of relying on that failure.
+func (mg *Alert) OpensIncidents() bool {
+	switch mg.Spec.Incidents {
+	case IncidentsNever:
+		return false
+	case IncidentsAuto:
+		return true
+	default:
+		return !mg.Aggregated()
+	}
 }
 
 // Paused says the Alert's firings are skipped.
