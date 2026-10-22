@@ -38,7 +38,7 @@ The reconciler creates the HyperDX webhook and alerts from the `Alert` CRs.
 ## Config (env)
 - `NAMESPACE` (default `krateo-system`) — the namespace of its Alerts and their Incidents.
 - `AUTOPILOT_A2A_URL` — the RCA agent (chart default `http://incident-agent.krateo-system.svc:8080/`).
-- `A2A_TIMEOUT` (default `180`s).
+- `A2A_TIMEOUT` (default `900`s) — the longest silence on the RCA stream; above the agentgateway LLM route's 600s timeout.
 - `COMPARE_MODEL_CONFIG` — the kagent ModelConfig whose model compares incidents (default `gemini-flash`).
 - `COMPARE_TIMEOUT` (default `60`s).
 

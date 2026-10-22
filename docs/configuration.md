@@ -21,5 +21,5 @@ timestamp: 2026-08-20T00:00:00Z
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |
 | `config.reconcileInterval` | `60` | seconds between reconciler passes; each pass that finds an alert ALERT is one firing |
 
-Runtime env (set on the Deployment) carries these, plus `A2A_TIMEOUT` (180 s, the RCA) and
+Runtime env (set on the Deployment) carries these, plus `A2A_TIMEOUT` (900 s, the longest silence on the RCA stream) and
 `COMPARE_TIMEOUT` (60 s, one comparison). See `helm/alert-provider/templates/deployment.yaml`.
