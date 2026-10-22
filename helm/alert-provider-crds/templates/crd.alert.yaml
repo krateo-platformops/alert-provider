@@ -44,6 +44,19 @@ spec:
             spec:
               type: object
               required: [interval, threshold, thresholdType]
+              # One source per Alert: it counts log rows (where) or aggregates a metric (metricRef),
+              # never both. Enforced at admission rather than discovered at evaluation.
+              x-kubernetes-validations:
+                - rule: "!has(self.metricRef) || self.where == ''"
+                  message: "metricRef and where are mutually exclusive: an Alert counts log rows (where) or aggregates a metric (metricRef), never both"
+                - rule: "has(self.aggregation) == (has(self.metricRef) || has(self.value))"
+                  message: "aggregation is required with metricRef or value, and only valid with one of them"
+                - rule: "!(has(self.metricRef) && has(self.value))"
+                  message: "value is read from log rows; a metric alert (metricRef) aggregates the metric itself"
+                - rule: "!has(self.aggregation) || self.aggregation != 'increase' || has(self.metricRef)"
+                  message: "aggregation 'increase' is a counter metric's; it requires metricRef"
+                - rule: "!has(self.labels) || has(self.metricRef)"
+                  message: "labels filter a metric's points; they require metricRef"
               properties:
                 displayName:
                   type: string
@@ -62,6 +75,45 @@ spec:
                     Kubernetes events, the JSON inside it — e.g.
                     ResourceAttributes['telemetry.source'] = 'k8s-events' AND
                     JSONExtractString(Body, 'object', 'reason') = 'BackOff'.
+                metricRef:
+                  type: object
+                  required: [name]
+                  description: >
+                    The Metric (metrics.observability.krateo.io), in the Alert's namespace, the
+                    alert aggregates over the metrics source, instead of counting log rows.
+                    Mutually exclusive with a non-empty where; requires aggregation. A reference to
+                    a Metric that does not exist is refused with phase: Invalid.
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                aggregation:
+                  type: string
+                  enum: [avg, max, min, sum, p95, increase]
+                  description: >
+                    How the points over the interval become the value compared with the threshold:
+                    the metric's (metricRef), or value's per log row. 'increase' is a counter's (a
+                    sum metric's) increase over the interval, with counter resets clamped so a
+                    restart neither spikes nor goes negative; it is metric-only and refused on any
+                    other metric type.
+                value:
+                  type: string
+                  description: >
+                    A ClickHouse SQL expression read from each log row that where matches,
+                    aggregated by aggregation instead of counting the rows — e.g. a cost extracted
+                    from the row's Body:
+                    toFloat64OrZero(extract(Body, 'agw\\.ai\\.usage\\.cost\\.total=([0-9.]+)')).
+                    Requires aggregation (avg, max, min, sum or p95). Log alerts only.
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  x-kubernetes-validations:
+                    - rule: "self.all(k, k.matches('^[A-Za-z0-9_./-]+$'))"
+                      message: "label keys are attribute names: letters, digits, '_', '.', '-', '/'"
+                  description: >
+                    Keep only the metric points whose attributes carry these values, e.g.
+                    {tenant: acme}; ANDed together. Metric alerts only.
                 interval:
                   type: string
                   enum: ["1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d"]
@@ -70,12 +122,14 @@ spec:
                 threshold:
                   type: number
                   description: >
-                    Trigger value compared via thresholdType. The value compared is a COUNT of rows
-                    over the window, so it is never negative — which makes some pairings decided
-                    before any data is read and rejected by the controller with phase: Invalid:
-                    'above 0' (value >= 0) fires on every evaluation including an empty result, and
-                    'below 0' (value < 0) can never fire at all. Use 1 with 'above' for "at least
-                    one", and 1 with 'below' for "none in this window".
+                    Trigger value compared via thresholdType. For a log alert (where) the value is
+                    a COUNT of rows over the window, so it is never negative — which makes some
+                    pairings decided before any data is read and rejected by the controller with
+                    phase: Invalid: 'above 0' (value >= 0) fires on every evaluation including an
+                    empty result, and 'below 0' (value < 0) can never fire at all. Use 1 with
+                    'above' for "at least one", and 1 with 'below' for "none in this window". For an
+                    aggregated alert (metricRef, or value) the compared value is the aggregation
+                    over the window, in its own unit, and any threshold is accepted.
                 thresholdType:
                   type: string
                   enum: [above, below, above_exclusive, below_or_equal, equal, not_equal, between, not_between]
@@ -122,7 +176,8 @@ spec:
                   type: string
                   description: >
                     Reconcile phase. Pending (no HyperDX alert yet) / Invalid (the threshold can only
-                    have one outcome — see threshold) / Synced (the CR's spec IS the
+                    have one outcome — see threshold — or the metricRef names no Metric, or its
+                    aggregation cannot apply to the Metric's type) / Synced (the CR's spec IS the
                     live alert) / SpecDrift (the spec could not be pushed — the live alert does
                     NOT match this CR) / Error.
                 error:

@@ -195,3 +195,51 @@ func TestAnHTTPErrorSaysWhatRequestsSaid(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestMetricSourceIsTheSourceOfKindMetric(t *testing.T) {
+	c, _ := client(t)
+	src, err := c.MetricSource(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "id", hyperdx.ID(src), "src-m")
+	// The logs the count alerts read are unchanged: still the first source.
+	logs, _ := c.FirstSource(ctx)
+	eq(t, "logs", hyperdx.ID(logs), "src-1")
+}
+
+func TestNoMetricSourceIsAnError(t *testing.T) {
+	c, api := client(t)
+	api.Sources = []any{map[string]any{"id": "src-1", "kind": "log"}, map[string]any{"id": "src-t", "kind": "trace"}}
+	_, err := c.MetricSource(ctx)
+	if err == nil || !strings.Contains(err.Error(), "no HyperDX metric source") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestATileCarriesItsMetricSelect(t *testing.T) {
+	c, api := client(t)
+	sel := hyperdx.Select{AggFn: "quantile", Level: 0.95, MetricName: "http.server.duration", MetricType: "histogram", Where: "Attributes['route'] = '/x'"}
+	dash, tile, err := c.EnsureTile(ctx, "krateo-alert-m", map[string]any{"id": "src-m"}, sel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := api.Get("dashboards", dash)
+	cfg := d["tiles"].([]any)[0].(map[string]any)["config"].(map[string]any)
+	eq(t, "source", cfg["sourceId"], "src-m")
+	eq(t, "select", cfg["select"], []any{map[string]any{"aggFn": "quantile", "level": 0.95, "metricName": "http.server.duration",
+		"metricType": "histogram", "valueExpression": "Value", "where": "Attributes['route'] = '/x'", "whereLanguage": "sql"}})
+
+	live, src, found, err := c.TileSelect(ctx, dash)
+	if err != nil || !found {
+		t.Fatalf("TileSelect: %v %v", found, err)
+	}
+	eq(t, "tile id", tile != "", true)
+	eq(t, "no drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), false)
+	other := sel
+	other.AggFn, other.Level = "max", 0
+	eq(t, "aggFn drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, other), true)
+	eq(t, "source drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-1"}, sel), true)
+	_, _, found, _ = c.TileSelect(ctx, "nope")
+	eq(t, "gone", found, false)
+}

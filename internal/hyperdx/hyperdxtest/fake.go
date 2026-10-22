@@ -27,6 +27,8 @@ type API struct {
 	seriesReqs []map[string]any
 	// Fail, when it returns a status code, answers the request with it.
 	Fail func(method, kind, id string) int
+	// Sources, when set, is what /api/v2/sources lists instead of a log and a metric source.
+	Sources []any
 }
 
 type store struct {
@@ -111,7 +113,12 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch kind {
 	case "sources":
-		reply([]any{map[string]any{"id": "src-1"}})
+		// A log source first, as the alerts count, then a metric source, as HyperDX lists them.
+		if a.Sources != nil {
+			reply(a.Sources)
+			return
+		}
+		reply([]any{map[string]any{"id": "src-1", "kind": "log"}, map[string]any{"id": "src-m", "kind": "metric"}})
 		return
 	case "charts":
 		a.seriesReqs = append(a.seriesReqs, body)
@@ -254,6 +261,18 @@ func (a *API) WhereOf(alert map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// TileOf is the config of the tile an alert evaluates: its sourceId and select.
+func (a *API) TileOf(alert map[string]any) map[string]any {
+	d := a.Get("dashboards", alert["dashboardId"].(string))
+	for _, t := range d["tiles"].([]any) {
+		tm := t.(map[string]any)
+		if tm["id"] == alert["tileId"] {
+			return tm["config"].(map[string]any)
+		}
+	}
+	return nil
 }
 
 // W is a Write.

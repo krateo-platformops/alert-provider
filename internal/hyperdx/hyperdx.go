@@ -131,6 +131,73 @@ func (c *Client) FirstSource(ctx context.Context) (map[string]any, error) {
 	return srcs[0], nil
 }
 
+// MetricSource is the first HyperDX source of kind "metric": the metrics a metric alert
+// aggregates.
+func (c *Client) MetricSource(ctx context.Context) (map[string]any, error) {
+	v, err := c.req(ctx, http.MethodGet, "/api/v2/sources", nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range maps(v) {
+		if s["kind"] == "metric" {
+			return s, nil
+		}
+	}
+	return nil, fmt.Errorf("no HyperDX metric source configured")
+}
+
+// Select is what a tile aggregates: the count of log rows matching Where, or a metric. It is the
+// tile's single select item.
+type Select struct {
+	// AggFn is HyperDX's aggregate function: "count" for a log alert.
+	AggFn string
+	// Where is the SQL filter applied before aggregating.
+	Where string
+	// MetricName and MetricType name the metric; empty for a log alert.
+	MetricName, MetricType string
+	// ValueExpression is what a log alert aggregates from each row; empty when it counts rows.
+	// A metric is always aggregated over its Value column.
+	ValueExpression string
+	// Level is the quantile level when AggFn is "quantile".
+	Level float64
+}
+
+// CountSelect counts the log rows matching where.
+func CountSelect(where string) Select {
+	return Select{AggFn: "count", Where: where}
+}
+
+// item is the select item a tile carries. A metric is aggregated over its Value column.
+func (s Select) item() map[string]any {
+	// whereLanguage "sql" is load-bearing: omitted, HyperDX maps the series to lucene and the SQL
+	// filter becomes a full-text search that matches its own text.
+	m := map[string]any{"aggFn": s.AggFn, "where": s.Where, "whereLanguage": "sql"}
+	if s.MetricName != "" {
+		m["metricName"], m["metricType"], m["valueExpression"] = s.MetricName, s.MetricType, "Value"
+	} else if s.ValueExpression != "" {
+		m["valueExpression"] = s.ValueExpression
+	}
+	if s.AggFn == "quantile" {
+		m["level"] = s.Level
+	}
+	return m
+}
+
+// SelectDrift says whether a live tile's select item and source differ from what sel and source
+// would write. Only the keys sel writes are compared, as strings, so a field HyperDX adds to its
+// answer is never a drift.
+func SelectDrift(live map[string]any, liveSourceID string, source map[string]any, sel Select) bool {
+	if liveSourceID != ID(source) {
+		return true
+	}
+	for k, v := range sel.item() {
+		if pyfmt.Str(live[k]) != pyfmt.Str(v) {
+			return true
+		}
+	}
+	return false
+}
+
 // RecordCounts are the records matching where (SQL) over the last seconds, grouped by the groupBy
 // expression, the most frequent first. The buckets are the coarsest that cover the window, so each
 // group comes back in at most two.
@@ -229,10 +296,10 @@ func (c *Client) invalidate() {
 	c.dashboards, c.cached = nil, false
 }
 
-// tileFor is the single count-over-time tile, as both create and update send it. A create mints a
-// new tile id whatever is sent. An update must send the live tile's id: an unknown id makes HyperDX
+// tileFor is the single over-time tile, as both create and update send it. A create mints a new
+// tile id whatever is sent. An update must send the live tile's id: an unknown id makes HyperDX
 // mint a new tile, drop the old one and delete every alert on it.
-func tileFor(name string, source map[string]any, where, tileID string) map[string]any {
+func tileFor(name string, source map[string]any, sel Select, tileID string) map[string]any {
 	return map[string]any{
 		"id": tileID, "x": 0, "y": 0, "w": 6, "h": 3,
 		"name": name,
@@ -241,11 +308,34 @@ func tileFor(name string, source map[string]any, where, tileID string) map[strin
 			"sourceId":    source["id"],
 			"asRatio":     false,
 			"fillNulls":   true,
-			// whereLanguage "sql" is load-bearing: omitted, HyperDX maps the series to lucene and
-			// the SQL filter becomes a full-text search that matches its own text.
-			"select": []any{map[string]any{"aggFn": "count", "where": where, "whereLanguage": "sql"}},
+			"select":      []any{sel.item()},
 		},
 	}
+}
+
+// TileSelect is the live tile's select item and source id, and false when the dashboard is gone.
+func (c *Client) TileSelect(ctx context.Context, dashboardID string) (map[string]any, string, bool, error) {
+	ds, err := c.ListDashboards(ctx)
+	if err != nil {
+		return nil, "", false, err
+	}
+	for _, d := range ds {
+		if ID(d) != dashboardID {
+			continue
+		}
+		t := tiles(d)
+		if len(t) == 0 {
+			return nil, "", false, nil
+		}
+		cfg, _ := t[0]["config"].(map[string]any)
+		src, _ := cfg["sourceId"].(string)
+		sel := maps(cfg["select"])
+		if len(sel) == 0 {
+			return map[string]any{}, src, true, nil
+		}
+		return sel[0], src, true, nil
+	}
+	return nil, "", false, nil
 }
 
 func tiles(d map[string]any) []map[string]any {
@@ -289,8 +379,14 @@ func (c *Client) TileWhere(ctx context.Context, dashboardID string) (string, boo
 // alert evaluates: the API keeps a tile id only if it already exists, and any other id replaces the
 // tile, which deletes the alerts on the replaced one.
 func (c *Client) UpdateDashboardTile(ctx context.Context, dashboardID, name string, source map[string]any, where, tileID string) error {
+	return c.UpdateTile(ctx, dashboardID, name, source, CountSelect(where), tileID)
+}
+
+// UpdateTile PUTs the dashboard so its tile tileID aggregates sel over source (see
+// UpdateDashboardTile for tileID).
+func (c *Client) UpdateTile(ctx context.Context, dashboardID, name string, source map[string]any, sel Select, tileID string) error {
 	_, err := c.req(ctx, http.MethodPut, "/api/v2/dashboards/"+dashboardID,
-		map[string]any{"name": name, "tags": []any{}, "tiles": []any{tileFor(name, source, where, tileID)}})
+		map[string]any{"name": name, "tags": []any{}, "tiles": []any{tileFor(name, source, sel, tileID)}})
 	c.invalidate()
 	return err
 }
@@ -299,6 +395,11 @@ func (c *Client) UpdateDashboardTile(ctx context.Context, dashboardID, name stri
 // and returns its id and its tile's. A dashboard whose tile id is in taken (a tile another alert
 // already evaluates) is not reused, so two alerts never share one `where`.
 func (c *Client) EnsureDashboardTile(ctx context.Context, name string, source map[string]any, where string, taken map[string]bool) (string, string, error) {
+	return c.EnsureTile(ctx, name, source, CountSelect(where), taken)
+}
+
+// EnsureTile is EnsureDashboardTile for any select: a log count or a metric aggregation.
+func (c *Client) EnsureTile(ctx context.Context, name string, source map[string]any, sel Select, taken map[string]bool) (string, string, error) {
 	ds, err := c.ListDashboards(ctx)
 	if err != nil {
 		return "", "", err
@@ -309,7 +410,7 @@ func (c *Client) EnsureDashboardTile(ctx context.Context, name string, source ma
 		}
 	}
 	v, err := c.req(ctx, http.MethodPost, "/api/v2/dashboards",
-		map[string]any{"name": name, "tags": []any{}, "tiles": []any{tileFor(name, source, where, "count")}})
+		map[string]any{"name": name, "tags": []any{}, "tiles": []any{tileFor(name, source, sel, "count")}})
 	c.invalidate()
 	if err != nil {
 		return "", "", err

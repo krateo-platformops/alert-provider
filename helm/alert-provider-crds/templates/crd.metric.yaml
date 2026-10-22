@@ -1,0 +1,66 @@
+# Metric (metrics.observability.krateo.io) — one collected metric an Alert can reference through
+# spec.metricRef (#34). A catalogue entry, not a reconciled resource: nothing watches it. It
+# exists so a metric Alert names a typed, reviewable target — a reference to a Metric that does
+# not exist is refused (phase: Invalid), where a mistyped free-text metric name would silently
+# never match. apis/alert/v1alpha1 holds its Go type; crd_test.go holds this schema to it.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: metrics.observability.krateo.io
+spec:
+  group: observability.krateo.io
+  scope: Namespaced
+  names:
+    kind: Metric
+    listKind: MetricList
+    plural: metrics
+    singular: metric
+    categories: [krateo, observability]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Metric
+          type: string
+          jsonPath: .spec.metricName
+        - name: Type
+          type: string
+          jsonPath: .spec.type
+        - name: Unit
+          type: string
+          jsonPath: .spec.unit
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [metricName, type]
+              properties:
+                metricName:
+                  type: string
+                  minLength: 1
+                  description: The name the metric is emitted under (the MetricName column).
+                type:
+                  type: string
+                  enum: [gauge, sum, histogram]
+                  description: >
+                    How the metric is collected, i.e. which otel_metrics_* table it lands in:
+                    gauge, sum (a counter) or histogram. An Alert's 'increase' aggregation needs
+                    a sum.
+                unit:
+                  type: string
+                  description: The metric's unit, as emitted (MetricUnit).
+                description:
+                  type: string
+                  description: What the metric measures.
+                collectedBy:
+                  type: string
+                  description: >
+                    How it is collected: the receiver or instrumentation scope (ScopeName), e.g.
+                    kubeletstatsreceiver.

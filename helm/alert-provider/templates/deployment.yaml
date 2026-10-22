@@ -30,6 +30,10 @@ rules:
   - apiGroups: ["observability.krateo.io"]
     resources: ["alerts", "alerts/status"]
     verbs: ["get", "list", "watch", "create", "patch", "update"]
+  # a metric Alert's metricRef names a Metric, read to build its tile
+  - apiGroups: ["observability.krateo.io"]
+    resources: ["metrics"]
+    verbs: ["get", "list", "watch"]
   # the key-bootstrap Job (same SA) writes the hyperdx-api-token Secret; the comparison reads a
   # ModelConfig's apiKeySecret
   - apiGroups: [""]

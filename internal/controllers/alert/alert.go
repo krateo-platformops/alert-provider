@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -191,9 +192,58 @@ type external struct {
 	hdx       *hyperdx.Client
 	firings   *firings
 	log       logging.Logger
-	source    map[string]any
+	source    map[string]any // the logs source
 	webhookID string
 	plan      plan
+	// sel and tileSource are what the Alert's tile aggregates and over which source: the count of
+	// its `where` rows over the logs source, or its metric over the metrics source.
+	sel        hyperdx.Select
+	tileSource map[string]any
+}
+
+// refuse is the observation of an Alert refused with why: nothing is pushed, and Update writes the
+// refusal to the status, once.
+func (e *external) refuse(a *v1alpha1.Alert, why string) reconciler.ExternalObservation {
+	if a.Status.Phase == v1alpha1.PhaseInvalid && a.Status.Error == why {
+		return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}
+	}
+	e.plan.invalid = why
+	return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false, Diff: "refused: " + why}
+}
+
+// tile resolves what the Alert's tile aggregates. A metric Alert reads its Metric and the metrics
+// source; a missing Metric, or one its aggregation cannot apply to, is why it is refused.
+func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) {
+	if !a.IsMetric() {
+		if !a.Aggregated() {
+			e.sel, e.tileSource = hyperdx.CountSelect(a.Spec.Where), e.source
+			return "", nil
+		}
+		sel, why := ValueSelect(a.Spec)
+		if why != "" {
+			return why, nil
+		}
+		e.sel, e.tileSource = sel, e.source
+		return "", nil
+	}
+	ref, ns := a.Spec.MetricRef, a.Namespace
+	var m v1alpha1.Metric
+	if err := e.kube.Get(ctx, types.NamespacedName{Namespace: ns, Name: ref.Name}, &m); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("metricRef %s/%s: no such Metric.", ns, ref.Name), nil
+		}
+		return "", err
+	}
+	sel, why := MetricSelect(a.Spec, m.Spec)
+	if why != "" {
+		return why, nil
+	}
+	src, err := e.hdx.MetricSource(ctx)
+	if err != nil {
+		return "", err
+	}
+	e.sel, e.tileSource = sel, src
+	return "", nil
 }
 
 func fields(spec v1alpha1.AlertSpec) hyperdx.AlertFields {
@@ -249,12 +299,20 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	// refusing to keep pushing stops the damage.
 	// It is written by Update: a status Observe sets is lost when provider-runtime then adds the
 	// finalizer to a new Alert, which reloads the object.
-	if why := Tautology(threshold(a.Spec), a.Spec.ThresholdType); why != "" {
-		if a.Status.Phase == v1alpha1.PhaseInvalid && a.Status.Error == why {
-			return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
+	// Only a count is never negative, so the rule holds for counting alerts alone: an aggregated
+	// value (a metric, or a value read from log rows) can be anything, and 'above 0' is a real
+	// question.
+	if !a.Aggregated() {
+		if why := Tautology(threshold(a.Spec), a.Spec.ThresholdType); why != "" {
+			return e.refuse(a, why), nil
 		}
-		e.plan.invalid = why
-		return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false, Diff: "refused: " + why}, nil
+	}
+	why, err := e.tile(ctx, a)
+	if err != nil {
+		return reconciler.ExternalObservation{}, failed(a, err)
+	}
+	if why != "" {
+		return e.refuse(a, why), nil
 	}
 
 	live, err := e.hdx.ListAlerts(ctx)
@@ -316,15 +374,35 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	a.Status.State = st
 	a.SetConditions(prv1.Available())
 
-	// `where` first: it decides what is counted, so pushing a threshold against a stale filter
-	// would briefly evaluate the new bound over the old query.
+	// The tile first: it decides what is evaluated, so pushing a threshold against a stale query
+	// would briefly evaluate the new bound over the old one. A log alert compares its `where`; a
+	// metric alert its whole select and source, since a new aggregation or metric is a new query.
 	if e.plan.dashboardID != "" {
-		liveWhere, found, err := e.hdx.TileWhere(ctx, e.plan.dashboardID)
-		if err != nil {
-			e.firings.start(a, e.source, st)
-			return reconciler.ExternalObservation{}, specDrift(a, e.log, err)
+		if a.Aggregated() {
+			live, liveSrc, found, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
+			if err != nil {
+				e.firings.start(a, e.source, st)
+				return reconciler.ExternalObservation{}, specDrift(a, e.log, err)
+			}
+			e.plan.where = found && hyperdx.SelectDrift(live, liveSrc, e.tileSource, e.sel)
+		} else {
+			liveWhere, found, err := e.hdx.TileWhere(ctx, e.plan.dashboardID)
+			if err != nil {
+				e.firings.start(a, e.source, st)
+				return reconciler.ExternalObservation{}, specDrift(a, e.log, err)
+			}
+			e.plan.where = found && liveWhere != a.Spec.Where
+			// A tile that aggregated (an Alert switched back to counting) can hold the same
+			// `where`: it is rewritten whole.
+			if found && !e.plan.where {
+				live, _, _, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
+				// A tile with no aggFn is a count: only an explicit other function is a switch,
+				// so a standard alert's tile is never rewritten on account of this check.
+				if fn, ok := live["aggFn"]; err == nil && ok && fn != nil && pyfmt.Str(fn) != "count" {
+					e.plan.where = true
+				}
+			}
 		}
-		e.plan.where = found && liveWhere != a.Spec.Where
 	}
 	e.plan.drift = hyperdx.AlertDrift(alert, a.Name, fields(a.Spec))
 
@@ -408,7 +486,7 @@ func (e *external) Update(ctx context.Context, mg resource.Managed) error {
 
 // create makes the dashboard tile, then an alert on it named after the Alert.
 func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
-	dash, tile, err := e.hdx.EnsureDashboardTile(ctx, "krateo-alert-"+a.Name, e.source, a.Spec.Where, e.plan.taken)
+	dash, tile, err := e.hdx.EnsureTile(ctx, "krateo-alert-"+a.Name, e.tileSource, e.sel, e.plan.taken)
 	if err != nil {
 		return failed(a, err)
 	}
@@ -436,7 +514,7 @@ func (e *external) push(ctx context.Context, a *v1alpha1.Alert) error {
 	}
 	var changed []string
 	if e.plan.where {
-		if err := e.hdx.UpdateDashboardTile(ctx, e.plan.dashboardID, "krateo-alert-"+a.Name, e.source, a.Spec.Where, tile); err != nil {
+		if err := e.hdx.UpdateTile(ctx, e.plan.dashboardID, "krateo-alert-"+a.Name, e.tileSource, e.sel, tile); err != nil {
 			return specDrift(a, e.log, err)
 		}
 		changed = append(changed, "where")
@@ -505,6 +583,14 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 	f.mu.Unlock()
 	if a.Paused() {
 		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", a.Name))
+		return
+	}
+	// The incident writer compares and root-causes the LOG RECORDS an alert counts. A metric has
+	// none, and an aggregated value is not a count (the prompt would describe the wrong
+	// threshold), so an aggregated firing is the ALERT state mirrored on the Alert, and HyperDX's
+	// notification through the webhook.
+	if a.Aggregated() {
+		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", a.Name))
 		return
 	}
 	alert := incident.Alert{Namespace: a.Namespace, Alert: compare.Alert{

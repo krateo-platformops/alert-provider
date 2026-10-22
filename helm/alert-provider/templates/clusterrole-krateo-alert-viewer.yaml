@@ -8,5 +8,5 @@ metadata:
   name: krateo-alert-viewer
 rules:
   - apiGroups: ["observability.krateo.io"]
-    resources: ["alerts"]
+    resources: ["alerts", "metrics"]
     verbs: ["get", "list", "watch"]
