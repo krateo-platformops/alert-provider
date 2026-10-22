@@ -74,10 +74,21 @@ apply. Nothing else runs automatically.
   timeout), and 1 means "still holds". So no `set -e` in a check; end every read with `|| exit 2`;
   map a `jq -e` test explicitly (0 = true, 1 = false, any other code is an error, so exit 2). When
   absence IS the answer, read with `--ignore-not-found` and decide what empty output means.
+- AN OBJECT THAT IS GONE TOOK ITS PROBLEM WITH IT. When the object a precondition tests no longer
+  exists, the problem on it is gone: read it with `--ignore-not-found` and exit 0 on empty output,
+  never 2.
+- A YES/NO TEST GIVES EXACTLY ONE true OR false. `jq -e` exits 4 when its filter outputs nothing,
+  as a `select` that matches nothing does, and several outputs are judged by the last alone. So
+  test a list with `any(<list>; <condition>)` or `all(<list>; <condition>)`, never `select`.
+- TEXT GOES INTO jq WITH --arg, never written inside the filter: `jq --arg t 'DELETED' '.type == $t'`.
+  Quotes and escapes inside a filter break it, and a filter that does not parse exits 3.
 - Status can describe the previous spec: when a kind reports status.observedGeneration, trust its
   status only once that reaches metadata.generation.
-- Name a custom resource by resource.group (alerts.observability.krateo.io): short names collide
-  across API groups.
+- NAME EVERY KIND BY ITS FULL RESOURCE NAME, in every script: plural.group (deployments.apps,
+  alerts.observability.krateo.io), or the plural alone for the core group (pods, serviceaccounts).
+  A singular or short name (deployment, sa) also matches the categories and short names installed
+  CRDs declare, so it can fail with "you must specify only one resource" or silently read another
+  kind.
 - APPLY is the corrective write, reviewed and run by a human with bash, kubectl and jq. It is
   readable (a comment saying what it changes and why) and idempotent: a second run changes nothing.
   It may `set -euo pipefail`. Prefer kubectl's own verbs (set image, set resources, scale) to
@@ -114,21 +125,22 @@ Example: payments-api is OOMKilled at a 128Mi memory limit.
   precondition:
     #!/usr/bin/env bash
     # Holds while payments-api still has the 128Mi memory limit it was OOMKilled at.
-    d=$(kubectl get deployment payments-api -n payments -o json) || exit 2
-    jq -e '.spec.template.spec.containers[] | select(.name == "payments-api")
-      | .resources.limits.memory == "128Mi"' <<<"$d" >/dev/null
+    d=$(kubectl get deployments.apps payments-api -n payments -o json --ignore-not-found) || exit 2
+    [[ -n $d ]] || exit 0
+    jq -e --arg c payments-api --arg m 128Mi 'any(.spec.template.spec.containers[];
+      .name == $c and .resources.limits.memory == $m)' <<<"$d" >/dev/null
     case $? in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac
   apply:
     #!/usr/bin/env bash
     # Raise payments-api's memory limit from 128Mi, where it was OOMKilled, to 512Mi.
     set -euo pipefail
-    kubectl set resources deployment payments-api -n payments -c payments-api --limits=memory=512Mi
+    kubectl set resources deployments.apps payments-api -n payments -c payments-api --limits=memory=512Mi
   verify:
     #!/usr/bin/env bash
     # Fixed once payments-api is off the 128Mi limit and every replica runs the new spec.
-    d=$(kubectl get deployment payments-api -n payments -o json) || exit 2
-    jq -e '(.spec.template.spec.containers[] | select(.name == "payments-api")
-        | .resources.limits.memory != "128Mi")
+    d=$(kubectl get deployments.apps payments-api -n payments -o json) || exit 2
+    jq -e --arg c payments-api --arg m 128Mi 'any(.spec.template.spec.containers[];
+        .name == $c and .resources.limits.memory != $m)
       and .status.observedGeneration >= .metadata.generation
       and .status.updatedReplicas == .spec.replicas
       and .status.availableReplicas == .spec.replicas' <<<"$d" >/dev/null
@@ -137,7 +149,7 @@ Example: payments-api is OOMKilled at a 128Mi memory limit.
     #!/usr/bin/env bash
     # Undo apply: put payments-api's memory limit back to 128Mi, the value read before the fix.
     set -euo pipefail
-    kubectl set resources deployment payments-api -n payments -c payments-api --limits=memory=128Mi
+    kubectl set resources deployments.apps payments-api -n payments -c payments-api --limits=memory=128Mi
   applyAction: none. The limit sits in the containers list, and a merge patch would replace it.
 
 Example: deployment web in shop cannot pull its private image; it has no imagePullSecrets, and
@@ -147,7 +159,7 @@ example's pattern; apply is one write, so it has an applyAction.
     #!/usr/bin/env bash
     # Give web the regcred pull secret, so it can pull its private image.
     set -euo pipefail
-    kubectl patch deployment web -n shop --type merge \
+    kubectl patch deployments.apps web -n shop --type merge \
       -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}}}'
   applyAction:
     {"verb": "patch", "apiVersion": "apps/v1", "resource": "deployments", "namespace": "shop",
