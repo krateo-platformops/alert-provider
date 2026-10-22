@@ -18,6 +18,7 @@ timestamp: 2026-08-20T00:00:00Z
 | `config.failedAnalysisHold` | `1800` | seconds an incident whose RCA failed keeps taking its alert's firings; past it, a new incident gets a fresh RCA |
 | `config.analysisRetries` | `2` | how many more times an RCA that failed transiently runs |
 | `config.analysisRetryDelay` | `120` | seconds before the first RCA retry; each next one waits twice as long |
+| `config.checkRepairAfter` | `900` | seconds an Open incident's precondition may answer only unknown before the incident is reanalyzed, once, to write a check that runs; `0` = off |
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |
 | `config.reconcileInterval` | `60` | seconds between reconciler passes; each pass that finds an alert ALERT is one firing |
 

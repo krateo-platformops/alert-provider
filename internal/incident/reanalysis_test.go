@@ -238,3 +238,113 @@ func TestAReanalysisRereadsAfterAConflict(t *testing.T) {
 		t.Error("the prompt is not from the re-read incident")
 	}
 }
+
+// unansweredIncident is an Open incident with a full analysis whose precondition has answered only
+// unknown (exit 2) since d ago, with no Reproduced condition.
+func (c *writerCase) unansweredIncident(d time.Duration) {
+	c.kube.put(ns, incName, alertName, seed{state: "Open", rootCause: "chart 1.1.9 is missing"})
+	c.kube.writeSpec(ns, incName, map[string]any{"prompt": BuildPrompt("CD not ready", "ALERT", "Body LIKE '%x%'", "")})
+	c.kube.writeStatus(ns, incName, map[string]any{
+		"howToFix": how, "report": "## old report",
+		"lastChecks": map[string]any{"precondition": map[string]any{"exit": 2, "since": ago(d),
+			"output": "error: you must specify only one resource"}},
+		"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
+	})
+	c.w.cfg.CheckRepairAfter = 15 * time.Minute
+	c.w.spawn = func(f func()) { f() }
+}
+
+func (c *writerCase) repair() time.Duration {
+	c.t.Helper()
+	wait, err := c.w.RepairCheck(context.Background(), context.Background(), ns, incName)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	return wait
+}
+
+func TestAPreconditionUnknownLongEnoughIsReanalyzedWithItsOutput(t *testing.T) {
+	c := newCase(t)
+	c.unansweredIncident(20 * time.Minute)
+	eq(t, "wait", c.repair(), time.Duration(0))
+	eq(t, "rca calls", len(c.rca), 1)
+	eq(t, "thread", c.rca[0][1], uuid.NewSHA1(uuid.NameSpaceDNS, []byte(incName+"#reanalysis-1")).String())
+	p := c.rca[0][0]
+	for _, want := range []string{
+		"## This is a reanalysis\n\nIts precondition script has given no verdict, only unknown, since ",
+		"Previous precondition script:",
+		"Its last run exited 2 (since ",
+		"error: you must specify only one resource",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "A person asked") {
+		t.Error("an automatic reanalysis claims a person asked for it")
+	}
+	s := st(c.kube.get(ns, incName))
+	eq(t, "state", s["state"], "Open")
+	eq(t, "howToFix", s["howToFix"], how)
+	re := s["reanalysis"].(map[string]any)
+	if f, _ := re["feedback"].(string); !strings.HasPrefix(f, "Automatic re-run: the precondition gave no verdict") {
+		t.Errorf("feedback = %q", f)
+	}
+}
+
+func TestAPreconditionUnknownForLessThanTheDelayWaits(t *testing.T) {
+	c := newCase(t)
+	c.unansweredIncident(5 * time.Minute)
+	if wait := c.repair(); wait < 9*time.Minute || wait > 10*time.Minute {
+		t.Errorf("wait = %s, want about 10m", wait)
+	}
+	eq(t, "rca calls", len(c.rca), 0)
+	eq(t, "status writes", len(c.kube.statusWrites()), 0)
+}
+
+func TestACheckIsRepairedOnlyOnce(t *testing.T) {
+	c := newCase(t)
+	c.unansweredIncident(20 * time.Minute)
+	c.repair()
+	// The new precondition is broken too.
+	c.kube.writeStatus(ns, incName, map[string]any{"lastChecks": map[string]any{
+		"precondition": map[string]any{"exit": 2, "since": ago(20 * time.Minute)}}})
+	eq(t, "wait", c.repair(), time.Duration(0))
+	eq(t, "rca calls", len(c.rca), 1)
+}
+
+func TestNoRepairWhenTheCheckAnsweredOrTheIncidentMovedOn(t *testing.T) {
+	for name, change := range map[string]map[string]any{
+		"it held":        {"lastChecks": map[string]any{"precondition": map[string]any{"exit": 1, "since": ago(time.Hour)}}},
+		"it was cleared": {"lastChecks": map[string]any{"precondition": map[string]any{"exit": 0, "since": ago(time.Hour)}}},
+		"never ran":      {"lastChecks": nil},
+		"reproduced":     {"conditions": []any{map[string]any{"type": "Reproduced", "status": "True"}}},
+		"verifying":      {"state": "Verifying"},
+		"reanalyzed":     {"reanalysis": map[string]any{"count": 1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newCase(t)
+			c.unansweredIncident(time.Hour)
+			c.kube.writeStatus(ns, incName, change)
+			eq(t, "wait", c.repair(), time.Duration(0))
+			eq(t, "rca calls", len(c.rca), 0)
+		})
+	}
+}
+
+func TestATimedOutPreconditionIsUnknownToo(t *testing.T) {
+	c := newCase(t)
+	c.unansweredIncident(time.Hour)
+	c.kube.writeStatus(ns, incName, map[string]any{"lastChecks": map[string]any{
+		"precondition": map[string]any{"since": ago(time.Hour), "output": "no exit code: killed after 60s"}}})
+	c.repair()
+	eq(t, "rca calls", len(c.rca), 1)
+}
+
+func TestCheckRepairOff(t *testing.T) {
+	c := newCase(t)
+	c.unansweredIncident(time.Hour)
+	c.w.cfg.CheckRepairAfter = 0
+	eq(t, "wait", c.repair(), time.Duration(0))
+	eq(t, "rca calls", len(c.rca), 0)
+}

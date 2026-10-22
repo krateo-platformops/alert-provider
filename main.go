@@ -84,7 +84,7 @@ func run(log logging.Logger) error {
 	namespace := getenv("NAMESPACE", "krateo-system")
 	interval := time.Duration(envInt("RECONCILE_INTERVAL", 60, 0)) * time.Second
 	a2a := &incident.A2A{
-		URL:     getenv("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/"),
+		URL: getenv("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/"),
 		// Above the agentgateway LLM route's 600s timeout: a slow model call is silence on the stream.
 		Timeout: time.Duration(envInt("A2A_TIMEOUT", 900, 0)) * time.Second,
 	}
@@ -97,6 +97,7 @@ func run(log logging.Logger) error {
 		MaxCandidates:         envInt("MAX_COMPARE_CANDIDATES", compare.DefaultMaxCandidates, 1),
 		AnalysisRetries:       envInt("ANALYSIS_RETRIES", 2, 0),
 		AnalysisRetryDelay:    time.Duration(envInt("ANALYSIS_RETRY_DELAY", 120, 1)) * time.Second,
+		CheckRepairAfter:      time.Duration(envInt("CHECK_REPAIR_AFTER", 900, 0)) * time.Second,
 	}
 	compareModelConfig := getenv("COMPARE_MODEL_CONFIG", "gemini-flash")
 	compareTimeout := time.Duration(envInt("COMPARE_TIMEOUT", 60, 0)) * time.Second

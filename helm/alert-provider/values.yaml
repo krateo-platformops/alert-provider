@@ -32,6 +32,10 @@ config:
   analysisRetries: 2
   # Seconds before the first retry; each next retry waits twice as long.
   analysisRetryDelay: 120
+  # Seconds an Open incident's precondition may answer only unknown (any exit but 0 or 1) before
+  # the incident is reanalyzed, once, with the script and what it printed, to write a check that
+  # runs. Never after a reanalysis, automatic or requested. 0 = off.
+  checkRepairAfter: 900
   # Intra-service auth (Option A). Base URL of the authn service. When set, the handler exchanges its
   # projected SA token (audience "authn") at <authnUrl>/serviceaccount/login for a Krateo JWT and
   # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them; a

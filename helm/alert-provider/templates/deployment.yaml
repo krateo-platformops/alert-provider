@@ -166,6 +166,8 @@ spec:
               value: {{ .Values.config.analysisRetries | quote }}
             - name: ANALYSIS_RETRY_DELAY
               value: {{ .Values.config.analysisRetryDelay | quote }}
+            - name: CHECK_REPAIR_AFTER
+              value: {{ .Values.config.checkRepairAfter | quote }}
             # Intra-service auth (Option A): when set, the handler exchanges the projected SA token
             # (audience "authn", mounted below) at <authnUrl>/serviceaccount/login for a Krateo JWT and
             # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them.

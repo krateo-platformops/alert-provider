@@ -98,6 +98,11 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
   kagent's `LLM error:`) runs again `config.analysisRetries` (2) times, `config.analysisRetryDelay`
   (120 s) after the first failure and twice as long after each next one, each on a kagent thread
   of its own. The incident stays `Analyzing` meanwhile.
+- An Open incident whose precondition has answered only unknown (any exit but 0 or 1) for
+  `config.checkRepairAfter` (900 s) is reanalyzed once, like a person's re-run, with the script
+  and what it printed in the prompt, so the new analysis can write a check that runs.
+  `status.reanalysis.feedback` says it was automatic. It never happens after a reanalysis,
+  automatic or requested, so a check that stays broken costs one more RCA, not a loop.
 - An RCA that still fails, or whose answer is unstructured or has no usable `howToFix`, still
   opens the incident, with `status.error` saying why it has no scripts.
 - An incident a human closed while it was analyzing stays `Closed`, which is final: the analysis

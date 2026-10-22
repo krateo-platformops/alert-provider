@@ -41,6 +41,7 @@ The reconciler creates the HyperDX webhook and alerts from the `Alert` CRs.
 - `A2A_TIMEOUT` (default `900`s) — the longest silence on the RCA stream; above the agentgateway LLM route's 600s timeout.
 - `COMPARE_MODEL_CONFIG` — the kagent ModelConfig whose model compares incidents (default `gemini-flash`).
 - `COMPARE_TIMEOUT` (default `60`s).
+- `CHECK_REPAIR_AFTER` (default `900`s; chart `config.checkRepairAfter`) — an Open incident whose precondition answers only unknown that long is reanalyzed once; `0` = off.
 
 ## Install
 ```sh

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
@@ -51,39 +52,117 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) error {
 		}
 
 		feedback := str(req, "feedback")
-		prev, _ := status(incident)["reanalysis"].(map[string]any)
-		count := int64(1)
-		if n, ok := prev["count"].(json.Number); ok {
-			if i, err := n.Int64(); err == nil {
-				count = i + 1
-			}
+		prompt := ReanalysisPrompt(str(spec(incident), "prompt"), incident, requestedBy, feedback)
+		key, err := w.restart(ctx, ns, incident, feedback, prompt)
+		if code(err) == 409 {
+			continue
 		}
-		st := map[string]any{"state": "Analyzing",
-			"reanalysis": map[string]any{"at": pyfmt.Isoformat(w.now()), "feedback": nilIfEmpty(feedback), "count": count}}
-		for _, k := range analysisKeys {
-			st[k] = nil
-		}
-		if conds, ok := withoutCondition(status(incident)["conditions"], reproduced); ok {
-			st["conditions"] = conds
-		}
-		prompt := ReanalysisPrompt(str(spec(incident), "prompt"), incident, feedback)
-		if err := w.patchStatus(ctx, ns, incident, st); err != nil {
-			if code(err) == 409 {
-				continue
-			}
+		if err != nil {
 			return err
 		}
-		w.log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis %d requested, analyzing", ns, name, count))
+		w.log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis requested, analyzing", ns, name))
 		// The incident is Analyzing: a request left behind by a failure here is dropped as
 		// unanswered on the next reconcile, and the analysis runs either way.
 		if err := w.dropRequest(ctx, ns, name); err != nil {
 			w.log.Info(fmt.Sprintf("[err] incident %s/%s: spec.reanalysis not removed (%s)", ns, name, err))
 		}
-		w.spawn(func() { w.RunAnalysis(run, ns, name, prompt, fmt.Sprintf("%s#reanalysis-%d", name, count)) })
+		w.spawn(func() { w.RunAnalysis(run, ns, name, prompt, key) })
 		return nil
 	}
 	return fmt.Errorf("incident %s/%s: no status write succeeded in %d attempts", ns, name, writeAttempts)
 }
+
+// restart sends the incident back to Analyzing in one status write conditioned on the
+// resourceVersion it was read at: the previous analysis and its check results are cleared, and
+// status.reanalysis records the run, with note shown where a person's feedback goes. It returns
+// the kagent thread the new RCA runs in.
+func (w *Writer) restart(ctx context.Context, ns string, incident map[string]any, note, prompt string) (string, error) {
+	prev, _ := status(incident)["reanalysis"].(map[string]any)
+	count := int64(1)
+	if n, ok := prev["count"].(json.Number); ok {
+		if i, err := n.Int64(); err == nil {
+			count = i + 1
+		}
+	}
+	st := map[string]any{"state": "Analyzing",
+		"reanalysis": map[string]any{"at": pyfmt.Isoformat(w.now()), "feedback": nilIfEmpty(note), "count": count}}
+	for _, k := range analysisKeys {
+		st[k] = nil
+	}
+	if conds, ok := withoutCondition(status(incident)["conditions"], reproduced); ok {
+		st["conditions"] = conds
+	}
+	if err := w.patchStatus(ctx, ns, incident, st); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s#reanalysis-%d", str(metadata(incident), "name"), count), nil
+}
+
+// UnansweredSince is when the precondition of an Open incident started answering only unknown,
+// when that is all it has ever answered and the incident has never been reanalyzed: the check is
+// broken, and nothing can tell whether the problem still holds.
+func UnansweredSince(incident map[string]any) (time.Time, bool) {
+	st := status(incident)
+	if s, _ := state(incident); s != "Open" || st["reanalysis"] != nil || hasCondition(st, reproduced) {
+		return time.Time{}, false
+	}
+	checks, _ := st["lastChecks"].(map[string]any)
+	pre, ok := checks["precondition"].(map[string]any)
+	if !ok {
+		return time.Time{}, false
+	}
+	if exit := fmt.Sprint(pre["exit"]); exit == "0" || exit == "1" {
+		return time.Time{}, false
+	}
+	return timestamp(pre["since"])
+}
+
+// RepairCheck reanalyzes an incident whose precondition has answered only unknown for
+// CheckRepairAfter, with the script and what it printed in the prompt, so the new analysis can
+// write one that runs. It happens once: a reanalysis, automatic or requested, ends it for good. It
+// returns how long until the incident is due, or 0.
+func (w *Writer) RepairCheck(ctx, run context.Context, ns, name string) (time.Duration, error) {
+	if w.cfg.CheckRepairAfter <= 0 {
+		return 0, nil
+	}
+	for range writeAttempts {
+		incident, err := w.kube.Get(ctx, ns, name)
+		if code(err) == 404 {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		since, ok := UnansweredSince(incident)
+		if !ok {
+			return 0, nil
+		}
+		if wait := since.Add(w.cfg.CheckRepairAfter).Sub(w.now()); wait > 0 {
+			return wait, nil
+		}
+		why := fmt.Sprintf("Its precondition script has given no verdict, only unknown, since %s, so nothing can tell "+
+			"whether the problem still holds.", pyfmt.Isoformat(since))
+		prompt := ReanalysisPrompt(str(spec(incident), "prompt"), incident, why, "")
+		key, err := w.restart(ctx, ns, incident, fmt.Sprintf(checkRepairNote, pyfmt.Isoformat(since)), prompt)
+		if code(err) == 409 {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		w.log.Info(fmt.Sprintf("[incident] %s/%s: precondition unknown since %s, reanalyzing", ns, name, pyfmt.Isoformat(since)))
+		w.spawn(func() { w.RunAnalysis(run, ns, name, prompt, key) })
+		return 0, nil
+	}
+	return 0, fmt.Errorf("incident %s/%s: no status write succeeded in %d attempts", ns, name, writeAttempts)
+}
+
+// checkRepairNote is status.reanalysis.feedback of an automatic reanalysis, which the portal shows
+// where a person's feedback goes.
+const checkRepairNote = "Automatic re-run: the precondition gave no verdict (exit 0 or 1) since %s."
+
+// requestedBy opens the prompt of a reanalysis a person asked for.
+const requestedBy = "A person asked for a new analysis of this incident."
 
 func (w *Writer) dropRequest(ctx context.Context, ns, name string) error {
 	err := w.kube.Patch(ctx, ns, name, map[string]any{"spec": map[string]any{"reanalysis": nil}})
@@ -117,13 +196,14 @@ func withoutCondition(conds any, t string) ([]any, bool) {
 var scriptOrder = []string{"precondition", "apply", "verify", "rollback"}
 
 // ReanalysisPrompt is the RCA prompt of a reanalysis: the incident's original prompt with, before
-// its output instructions, the previous analysis, the results its scripts gave, and the feedback.
-func ReanalysisPrompt(original string, incident map[string]any, feedback string) string {
+// its output instructions, why it runs, the previous analysis, the results its scripts gave, and
+// the feedback.
+func ReanalysisPrompt(original string, incident map[string]any, why, feedback string) string {
 	base := strings.TrimSuffix(original, report.Instructions)
 	st := status(incident)
 	var b strings.Builder
 	b.WriteString(base)
-	b.WriteString("\n\n## This is a reanalysis\n\nA person asked for a new analysis of this incident. The previous one is below; " +
+	b.WriteString("\n\n## This is a reanalysis\n\n" + why + " The previous analysis is below; " +
 		"it may be wrong. Diagnose again from the live cluster rather than restating it, and write scripts that run. " +
 		"A script whose last run gave no verdict (an exit other than 0 or 1) is broken: its output says why.")
 	if feedback != "" {
@@ -169,6 +249,17 @@ func lastRun(c map[string]any) string {
 		return out + " and printed:\n\n```text\n" + o + "\n```"
 	}
 	return out + "."
+}
+
+// hasCondition says the status carries a condition of type t.
+func hasCondition(st map[string]any, t string) bool {
+	list, _ := st["conditions"].([]any)
+	for _, c := range list {
+		if m, ok := c.(map[string]any); ok && m["type"] == t {
+			return true
+		}
+	}
+	return false
 }
 
 // flagged says the incident's first precondition run exited 0.

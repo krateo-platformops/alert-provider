@@ -124,6 +124,13 @@
           "description": "Seconds before the first RCA retry; each next retry waits twice as long.",
           "default": 120
         },
+        "checkRepairAfter": {
+          "type": "integer",
+          "minimum": 0,
+          "title": "Check repair delay (s)",
+          "description": "Seconds an Open incident's precondition may answer only unknown (any exit but 0 or 1) before the incident is reanalyzed, once, with the script and what it printed, to write a check that runs. Never after a reanalysis, automatic or requested. 0 = off.",
+          "default": 900
+        },
         "authnUrl": {
           "type": "string",
           "title": "authn base URL (intra-service auth)",
