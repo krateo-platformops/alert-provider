@@ -41,3 +41,7 @@ timestamp: 2026-08-20T00:00:00Z
 ## 2026-10-19
 - The seeded alerts skip DELETED watch records: the collector writes one when the apiserver expires an Event, an hour after it, repeating its last state, so each failure fired the alert a second time. Seeding only creates an absent Alert, so an existing one keeps its old `where` until it is edited or deleted and reseeded.
 - A firing keeps the alert's last answered comparison while its candidate incidents are the same and every record it matches was among the ones that comparison saw; only a new record or a changed incident calls the model. A failed call is not kept, so the next firing retries it. Replayed over 8 days of krateo-057's comparisons, it skips 84% of the calls.
+
+## 2026-10-21
+- An RCA that failed transiently (the call failed, the answer was empty, or it was only kagent's `LLM error:`) runs again, 2 more times by default, 2 then 4 minutes later (`config.analysisRetries`, `config.analysisRetryDelay`). The incident stays `Analyzing` meanwhile.
+- A person can ask for a new analysis of an `Open` or `Verifying` incident with `spec.reanalysis`, optionally with feedback. The provider clears the old analysis and its check results, records the request in `status.reanalysis`, and runs the RCA again with the previous analysis, its scripts' last results and the feedback in the prompt. The Role gains `watch` on incidents.

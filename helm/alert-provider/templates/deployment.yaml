@@ -22,10 +22,11 @@ metadata:
   name: krateo-alert-provider
   namespace: krateo-system
 rules:
-  # the handler opens Incidents for firing alerts and writes the RCA
+  # the handler opens Incidents for firing alerts and writes the RCA; it watches them for
+  # spec.reanalysis, which it consumes
   - apiGroups: ["observability.krateo.io"]
     resources: ["incidents", "incidents/status"]
-    verbs: ["create", "get", "list", "patch", "update"]
+    verbs: ["create", "get", "list", "watch", "patch", "update"]
   # the reconciler reads Alert CRs (desired), seeds defaults, and writes their status
   - apiGroups: ["observability.krateo.io"]
     resources: ["alerts", "alerts/status"]
@@ -161,6 +162,10 @@ spec:
               value: {{ .Values.config.maxCompareCandidates | quote }}
             - name: FAILED_ANALYSIS_HOLD
               value: {{ .Values.config.failedAnalysisHold | quote }}
+            - name: ANALYSIS_RETRIES
+              value: {{ .Values.config.analysisRetries | quote }}
+            - name: ANALYSIS_RETRY_DELAY
+              value: {{ .Values.config.analysisRetryDelay | quote }}
             # Intra-service auth (Option A): when set, the handler exchanges the projected SA token
             # (audience "authn", mounted below) at <authnUrl>/serviceaccount/login for a Krateo JWT and
             # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them.

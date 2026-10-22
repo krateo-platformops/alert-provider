@@ -72,6 +72,11 @@ type Config struct {
 	FailedAnalysisHold time.Duration
 	// MaxCandidates is how many of an alert's newest open, analyzed incidents one comparison weighs.
 	MaxCandidates int
+	// AnalysisRetries is how many more times an RCA that failed transiently (see transient) runs,
+	// AnalysisRetryDelay after the first failure and twice as long after each next one. The
+	// incident stays Analyzing meanwhile.
+	AnalysisRetries    int
+	AnalysisRetryDelay time.Duration
 }
 
 // Writer writes the Incidents of firing alerts.
@@ -83,6 +88,10 @@ type Writer struct {
 	compare func(ctx context.Context, prompt string, names []string) (string, string, error)
 	log     logging.Logger
 	now     func() time.Time
+	// sleep waits d, and is false when ctx ended first; spawn runs a reanalysis' RCA off its
+	// reconcile.
+	sleep func(ctx context.Context, d time.Duration) bool
+	spawn func(func())
 
 	slots    chan struct{}
 	mu       sync.Mutex
@@ -114,8 +123,13 @@ func newWriter(cfg Config, kube Kube,
 	if cfg.MaxCandidates < 1 {
 		cfg.MaxCandidates = 1
 	}
+	if cfg.AnalysisRetries < 0 {
+		cfg.AnalysisRetries = 0
+	}
 	return &Writer{cfg: cfg, kube: kube, analyze: analyze, compare: cmp, log: log,
 		now:      func() time.Time { return time.Now().UTC() },
+		sleep:    sleep,
+		spawn:    func(f func()) { go f() },
 		slots:    make(chan struct{}, cfg.MaxConcurrentAnalyses),
 		firing:   map[string]bool{},
 		verdicts: map[string]verdict{}}
@@ -126,9 +140,21 @@ func IncidentName(alert string, at time.Time) string {
 	return alert + "-" + at.UTC().Format("20060102-150405")
 }
 
-// contextID is the incident's own kagent thread: every RCA starts from an empty conversation.
-func contextID(name string) string {
-	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(name)).String()
+// contextID is the kagent thread of one RCA run, named by key: every run starts from an empty
+// conversation.
+func contextID(key string) string {
+	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(key)).String()
+}
+
+func sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func metadata(obj map[string]any) map[string]any {
@@ -495,45 +521,34 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 		return
 	}
 	if created != nil {
-		w.RunAnalysis(ctx, ns, str(metadata(created), "name"), prompt)
+		name := str(metadata(created), "name")
+		w.RunAnalysis(ctx, ns, name, prompt, name)
 	}
 }
 
-// RunAnalysis is the RCA of a new incident, then its one status write: the analysis and state
-// Open. error says why an incident has no howToFix: the call failed, the answer was empty or
-// unstructured, or its scripts were unusable. It is cleared when howToFix is written.
-func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt string) {
-	st := map[string]any{}
-	func() {
-		w.slots <- struct{}{}
-		raw, ledger, err := w.analyze(ctx, prompt, contextID(name))
-		<-w.slots
-		if err != nil { // a failed RCA still opens the incident
-			st["error"] = "The analysis failed: " + pyfmt.Cut(err.Error(), 500)
-			return
+// RunAnalysis is the RCA of an Analyzing incident, then its one status write: the analysis and
+// state Open. key names the run's kagent threads: the incident's name for its first analysis.
+// A transient failure is retried AnalysisRetries times, each in a thread of its own. error says why
+// an incident has no howToFix: the call failed, the answer was empty or unstructured, or its
+// scripts were unusable. It is cleared when howToFix is written.
+func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) {
+	var st map[string]any
+	for attempt := 0; ; attempt++ {
+		id := key
+		if attempt > 0 {
+			id = fmt.Sprintf("%s#retry-%d", key, attempt)
 		}
-		w.log.Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
-		prose, v2 := report.Parse(raw, ledger)
-		if pyfmt.Strip(prose) != "" {
-			st["report"] = prose
+		var why string
+		st, why = w.analysis(ctx, ns, name, prompt, contextID(id))
+		if why == "" || attempt >= w.cfg.AnalysisRetries {
+			break
 		}
-		for _, k := range report.StatusKeys {
-			if v, ok := v2[k]; ok {
-				st[k] = v
-			}
+		delay := w.cfg.AnalysisRetryDelay << attempt
+		w.log.Info(fmt.Sprintf("[a2a] %s/%s: %s; retry %d of %d in %s", ns, name, why, attempt+1, w.cfg.AnalysisRetries, delay))
+		if !w.sleep(ctx, delay) {
+			break
 		}
-		_, hasFix := v2["howToFix"]
-		switch {
-		case hasFix:
-			st["error"] = nil
-		case pyfmt.Strip(prose) == "" && len(v2) == 0:
-			st["error"] = "The analysis returned no output."
-		case len(v2) == 0:
-			st["error"] = "The analysis returned no structured block, so the incident has no scripts to check or fix it."
-		default:
-			st["error"] = "The analysis returned no usable howToFix, so the incident has no scripts to check or fix it."
-		}
-	}()
+	}
 	st["completedAt"] = pyfmt.Isoformat(w.now())
 	if err := w.finish(ctx, ns, name, st); err != nil { // RecoverInterrupted opens it after a restart
 		w.log.Info(fmt.Sprintf("[err] incident %s/%s: analysis not written (%s)", ns, name, err))
@@ -544,4 +559,48 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt string) {
 		fix = "yes"
 	}
 	w.log.Info(fmt.Sprintf("[ok] incident %s/%s: analysis written (howToFix=%s)", ns, name, fix))
+}
+
+// llmError starts the answer kagent streams when its model call failed.
+const llmError = "LLM error:"
+
+// analysis is one RCA run: the status fields it writes, and why the run failed transiently, or ""
+// when it did not. A failed call, an empty answer and an answer that is only kagent's model error
+// are transient: the gateway or the model provider failed, and the same prompt may succeed later.
+// An answer without usable scripts is not: the agent answered.
+func (w *Writer) analysis(ctx context.Context, ns, name, prompt, contextID string) (map[string]any, string) {
+	st := map[string]any{}
+	w.slots <- struct{}{}
+	raw, ledger, err := w.analyze(ctx, prompt, contextID)
+	<-w.slots
+	if err != nil { // a failed RCA still opens the incident
+		st["error"] = "The analysis failed: " + pyfmt.Cut(err.Error(), 500)
+		return st, "the call failed"
+	}
+	w.log.Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
+	prose, v2 := report.Parse(raw, ledger)
+	if pyfmt.Strip(prose) != "" {
+		st["report"] = prose
+	}
+	for _, k := range report.StatusKeys {
+		if v, ok := v2[k]; ok {
+			st[k] = v
+		}
+	}
+	_, hasFix := v2["howToFix"]
+	switch {
+	case hasFix:
+		st["error"] = nil
+	case pyfmt.Strip(prose) == "" && len(v2) == 0:
+		st["error"] = "The analysis returned no output."
+		return st, "the answer was empty"
+	case len(v2) == 0:
+		st["error"] = "The analysis returned no structured block, so the incident has no scripts to check or fix it."
+		if strings.HasPrefix(pyfmt.Strip(prose), llmError) {
+			return st, "the model call failed"
+		}
+	default:
+		st["error"] = "The analysis returned no usable howToFix, so the incident has no scripts to check or fix it."
+	}
+	return st, ""
 }

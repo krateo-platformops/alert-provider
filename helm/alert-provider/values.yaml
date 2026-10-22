@@ -24,8 +24,14 @@ config:
   maxCompareCandidates: 50
   # Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the
   # failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the
-  # failed one stays Open until a person closes it.
+  # failed one stays Open until a person closes it or asks for a new analysis.
   failedAnalysisHold: 1800
+  # How many more times an RCA that failed transiently runs: the call failed (a timeout, a 5xx,
+  # a cut stream), the answer was empty, or it was only the model's error. The incident stays
+  # Analyzing meanwhile.
+  analysisRetries: 2
+  # Seconds before the first retry; each next retry waits twice as long.
+  analysisRetryDelay: 120
   # Intra-service auth (Option A). Base URL of the authn service. When set, the handler exchanges its
   # projected SA token (audience "authn") at <authnUrl>/serviceaccount/login for a Krateo JWT and
   # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them; a

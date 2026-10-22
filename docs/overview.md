@@ -94,7 +94,11 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 - At most `MAX_CONCURRENT_ANALYSES` RCAs (2) run at once, so alerts that fire together do not
   spend the model's per-minute token quota at once and fail every RCA; a new incident waits in
   `Analyzing` for a slot.
-- An RCA that fails, or whose answer is empty, unstructured or has no usable `howToFix`, still
+- An RCA that failed transiently (the call failed, the answer was empty, or it was only
+  kagent's `LLM error:`) runs again `config.analysisRetries` (2) times, `config.analysisRetryDelay`
+  (120 s) after the first failure and twice as long after each next one, each on a kagent thread
+  of its own. The incident stays `Analyzing` meanwhile.
+- An RCA that still fails, or whose answer is unstructured or has no usable `howToFix`, still
   opens the incident, with `status.error` saying why it has no scripts.
 - An incident a human closed while it was analyzing stays `Closed`, which is final: the analysis
   is written without a state.
@@ -102,6 +106,23 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
   `error`, so it can be closed and the next firing opens a fresh one.
 - The alert returning to OK changes nothing. From `Open` on, the incident controller runs its
   scripts and moves it, or a human closes it.
+
+## Reanalysis
+
+A person asks for a new analysis of an `Open` or `Verifying` incident by setting
+`spec.reanalysis` (the portal's Re-run analysis), optionally with `feedback`: what they found
+wrong. The provider watches Incidents for it, and:
+
+1. clears the analysis, `howToFix`, `lastChecks`, `verifyingSince` and the `Reproduced`
+   condition, records the request in `status.reanalysis` (`at`, `feedback`, `count`) and sets
+   `Analyzing`, in one status write conditioned on the incident's resourceVersion;
+2. removes `spec.reanalysis`;
+3. runs the RCA on a thread of its own (`<name>#reanalysis-<count>`), with the original prompt
+   plus the previous root cause or error, each previous script with its last result (and, for an
+   unknown result, what the run printed), and the feedback; then writes it as in step 7 above.
+
+A request on an incident in any other state is removed unanswered: an `Analyzing` incident is
+already being analyzed, and a `Resolved` or `Closed` one is over.
 
 ## Incident comparison
 

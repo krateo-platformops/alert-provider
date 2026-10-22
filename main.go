@@ -31,6 +31,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/controllers/alert"
 	"github.com/krateo-platformops/alert-provider/internal/controllers/common/option"
+	"github.com/krateo-platformops/alert-provider/internal/controllers/reanalysis"
 	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
 	"github.com/krateo-platformops/alert-provider/internal/incident"
 	"github.com/krateo-platformops/alert-provider/internal/webhook"
@@ -93,6 +94,8 @@ func run(log logging.Logger) error {
 		MaxConcurrentAnalyses: envInt("MAX_CONCURRENT_ANALYSES", 2, 1),
 		FailedAnalysisHold:    time.Duration(envInt("FAILED_ANALYSIS_HOLD", 1800, 0)) * time.Second,
 		MaxCandidates:         envInt("MAX_COMPARE_CANDIDATES", compare.DefaultMaxCandidates, 1),
+		AnalysisRetries:       envInt("ANALYSIS_RETRIES", 2, 0),
+		AnalysisRetryDelay:    time.Duration(envInt("ANALYSIS_RETRY_DELAY", 120, 1)) * time.Second,
 	}
 	compareModelConfig := getenv("COMPARE_MODEL_CONFIG", "gemini-flash")
 	compareTimeout := time.Duration(envInt("COMPARE_TIMEOUT", 60, 0)) * time.Second
@@ -157,6 +160,10 @@ func run(log logging.Logger) error {
 			return err
 		}
 		log.Info("[reconciler] started", "interval", interval.String(), "api", apiURL)
+	}
+
+	if err := reanalysis.Setup(mgr, reanalysis.Options{Writer: writer, AnalysisContext: ctx, Log: log}); err != nil {
+		return fmt.Errorf("cannot set up the reanalysis controller: %w", err)
 	}
 
 	errs := make(chan error, 1)
