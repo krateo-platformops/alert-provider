@@ -13,12 +13,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
+
 	"github.com/krateo-platformops/alert-provider/internal/httpx"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
 )
 
-// A2A calls the RCA agent (incident-agent) with JSON-RPC message/stream.
+// A2A calls the RCA agent (autopilot, which delegates to incident-agent) with JSON-RPC
+// message/stream.
 type A2A struct {
 	URL string
 	// Timeout bounds the connection and every wait for the stream's next bytes, not the whole
@@ -27,6 +30,8 @@ type A2A struct {
 	// JWT is the service JWT the call presents; the agentgateway authenticates it and the agent
 	// propagates it to its gated MCP tools and sub-agents.
 	JWT func(context.Context) string
+	// Log, when set, receives what could not be read of a sub-agent's session.
+	Log logging.Logger
 }
 
 var a2aHTTP = &http.Client{}
@@ -77,7 +82,8 @@ func (a *A2A) Analyze(ctx context.Context, prompt, contextID string) (string, []
 	}
 
 	out := ""
-	var ledger []report.ToolResult
+	var ledger, delegated []report.ToolResult
+	var sessions []string
 	seen := map[[2]string]bool{}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
@@ -104,12 +110,19 @@ func (a *A2A) Analyze(ctx context.Context, prompt, contextID string) (string, []
 		parts, _ := msg["parts"].([]any)
 		// Collected before the text check below: a message carrying only tool results has no text
 		// at all, and those are the very events that record a denial. The stream re-sends
-		// cumulative snapshots, so they are de-duplicated by (name, payload).
+		// cumulative snapshots, so they are de-duplicated by (name, payload). A delegation's result
+		// is the sub-agent's answer, not a read: its session holds the reads (see below).
 		for _, tr := range toolResults(parts) {
 			key := [2]string{tr.Name, tr.Payload}
-			if !seen[key] {
-				seen[key] = true
-				ledger = append(ledger, tr)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if tr.session != "" {
+				sessions = append(sessions, tr.session)
+				delegated = append(delegated, tr.ToolResult)
+			} else {
+				ledger = append(ledger, tr.ToolResult)
 			}
 		}
 		var text strings.Builder
@@ -134,6 +147,23 @@ func (a *A2A) Analyze(ctx context.Context, prompt, contextID string) (string, []
 	}
 	if err := sc.Err(); err != nil {
 		return "", nil, timedOut(err)
+	}
+	if len(sessions) > 0 {
+		reads, err := a.sessionReads(context.WithoutCancel(ctx), sessions)
+		for _, tr := range reads {
+			key := [2]string{tr.Name, tr.Payload}
+			if !seen[key] {
+				seen[key] = true
+				ledger = append(ledger, tr)
+			}
+		}
+		if err != nil {
+			// The delegations stand in for the reads that could not be fetched.
+			ledger = append(ledger, delegated...)
+			if a.Log != nil {
+				a.Log.Info(fmt.Sprintf("[a2a] sub-agent reads not fetched, the ledger has the delegations instead (%s)", err))
+			}
+		}
 	}
 	return pyfmt.Strip(out), ledger, nil
 }
@@ -186,13 +216,38 @@ func resultText(resp any) string {
 	return pyfmt.Dumps(resp)
 }
 
+// toolResult is one tool result, and the kagent session it ran in when the tool is a sub-agent:
+// a delegation answers {result | error, subagent_session_id}.
+type toolResult struct {
+	report.ToolResult
+	session string
+}
+
+// newToolResult is the result a tool named name returned as resp.
+func newToolResult(name any, resp any) toolResult {
+	// Failed says the call errored, which tells a refusal the analyzer suffered from one it is
+	// reporting. The runtimes flag it differently (error vs isError).
+	failed, session := false, ""
+	if rm, ok := resp.(map[string]any); ok {
+		failed = pyfmt.Truthy(rm["error"]) || pyfmt.Truthy(rm["isError"])
+		if s, ok := rm["subagent_session_id"].(string); ok {
+			session = s
+		}
+	}
+	n := ""
+	if pyfmt.Truthy(name) {
+		n = pyfmt.Str(name)
+	}
+	return toolResult{report.ToolResult{Name: n, Payload: resultText(resp), Failed: failed}, session}
+}
+
 // toolResults are the tool results in one A2A message. kagent mirrors every non-partial ADK event
 // onto the status stream, so each tool result arrives as a DataPart typed function_response whose
 // data is the GenAI FunctionResponse, {id, name, response}. kagent's exact part shape has changed
 // before, so anything unrecognised yields nothing and the report degrades to model-declared
 // retrieval.
-func toolResults(parts []any) []report.ToolResult {
-	var out []report.ToolResult
+func toolResults(parts []any) []toolResult {
+	var out []toolResult
 	for _, p := range parts {
 		pm, ok := p.(map[string]any)
 		if !ok {
@@ -202,18 +257,7 @@ func toolResults(parts []any) []report.ToolResult {
 		if !ok || partType(pm) != "function_response" {
 			continue
 		}
-		resp := data["response"]
-		// Failed says the call errored, which tells a refusal the analyzer suffered from one it is
-		// reporting. The runtimes flag it differently (error vs isError).
-		failed := false
-		if rm, ok := resp.(map[string]any); ok {
-			failed = pyfmt.Truthy(rm["error"]) || pyfmt.Truthy(rm["isError"])
-		}
-		name := ""
-		if pyfmt.Truthy(data["name"]) {
-			name = pyfmt.Str(data["name"])
-		}
-		out = append(out, report.ToolResult{Name: name, Payload: resultText(resp), Failed: failed})
+		out = append(out, newToolResult(data["name"], data["response"]))
 	}
 	return out
 }
