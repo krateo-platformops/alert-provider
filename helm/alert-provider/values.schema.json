@@ -87,8 +87,8 @@
         "autopilotA2aUrl": {
           "type": "string",
           "title": "RCA agent A2A URL",
-          "description": "A2A endpoint of the agent the webhook calls for root-cause analysis. Defaults to the in-cluster kagent A2A Service `http://incident-agent.krateo-system.svc:8080/` (kagent names the Service after the Agent's metadata.name).",
-          "default": "http://incident-agent.krateo-system.svc:8080/"
+          "description": "A2A endpoint of the agent the webhook calls for root-cause analysis: autopilot, which hands it to incident-agent and relays the answer. Defaults to the in-cluster kagent A2A Service `http://autopilot.krateo-system.svc:8080/`. Through the agentgateway (`<gateway>/api/a2a/<ns>/autopilot`), the evidence ledger also reads incident-agent's own tool calls from kagent's session API next to it.",
+          "default": "http://autopilot.krateo-system.svc:8080/"
         },
         "compareModelConfig": {
           "type": "string",
