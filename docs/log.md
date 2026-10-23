@@ -48,3 +48,7 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-10-22
 - `A2A_TIMEOUT` defaults to 900 s. The RCA stream is silent while the agent waits on a model call, and the agentgateway LLM route now waits up to 600 s for one; at 180 s a slow provider failed the RCA and every retry.
+
+## 2026-10-23
+- The RCA goes to autopilot, which hands it to incident-agent and relays the answer (`config.autopilotA2aUrl` defaults to `http://autopilot.krateo-system.svc:8080/`). A delegation's result is the sub-agent's answer, not a read, so it no longer enters the evidence ledger: alert-provider reads the tool calls of the sub-agent sessions it ran in (and theirs in turn, three levels deep) from kagent's session API next to the gateway's A2A path, as itself. When a session cannot be read, or the agent is called directly, the delegations stand in for the reads.
+- `A2A_TIMEOUT` defaults to 2700 s: autopilot's stream is silent for the whole delegation, and incident-agent's RCAs took up to 38 minutes on krateo-057 (5 of 22 over 15 minutes, 2026-10-20 to 22).

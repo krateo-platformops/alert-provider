@@ -84,9 +84,11 @@ func run(log logging.Logger) error {
 	namespace := getenv("NAMESPACE", "krateo-system")
 	interval := time.Duration(envInt("RECONCILE_INTERVAL", 60, 0)) * time.Second
 	a2a := &incident.A2A{
-		URL:     getenv("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/"),
-		// Above the agentgateway LLM route's 600s timeout: a slow model call is silence on the stream.
-		Timeout: time.Duration(envInt("A2A_TIMEOUT", 900, 0)) * time.Second,
+		URL: getenv("AUTOPILOT_A2A_URL", "http://autopilot.krateo-system.svc:8080/"),
+		// autopilot's stream is silent for the whole of its delegation to incident-agent, which
+		// took up to 38 minutes on krateo-057.
+		Timeout: time.Duration(envInt("A2A_TIMEOUT", 2700, 0)) * time.Second,
+		Log:     log,
 	}
 	jwt := &incident.ServiceJWT{URL: getenv("AUTHN_URL", ""), TokenFile: getenv("AUTHN_TOKEN_FILE", "/var/run/secrets/authn/token"), Log: log}
 	a2a.JWT = jwt.Get
