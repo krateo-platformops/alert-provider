@@ -77,9 +77,6 @@ type Config struct {
 	// incident stays Analyzing meanwhile.
 	AnalysisRetries    int
 	AnalysisRetryDelay time.Duration
-	// CheckRepairAfter is how long the precondition of an Open incident may answer only unknown
-	// before the incident is reanalyzed, once, to write a check that runs; 0 = never.
-	CheckRepairAfter time.Duration
 }
 
 // Writer writes the Incidents of firing alerts.

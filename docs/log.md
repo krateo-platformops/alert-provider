@@ -48,5 +48,4 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-10-22
 - `A2A_TIMEOUT` defaults to 900 s. The RCA stream is silent while the agent waits on a model call, and the agentgateway LLM route now waits up to 600 s for one; at 180 s a slow provider failed the RCA and every retry.
-- An Open incident whose precondition answers only unknown for `config.checkRepairAfter` (900 s) is reanalyzed once, with the broken script and its output in the prompt. A reanalysis, automatic or requested, ends it for good.
 - The RCA prompt's check rules: full resource names in every script (`deployments.apps`, not `deployment`), `any`/`all` for yes/no jq tests, text into jq with `--arg`, and a precondition whose object is gone exits 0. Its examples follow them.

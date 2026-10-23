@@ -1,7 +1,6 @@
-// Package reanalysis is the controller of Incident reanalyses: it hands every Incident that carries
-// spec.reanalysis to the incident writer, which consumes the request and runs the root-cause
-// analysis again, and every Open one whose precondition answers only unknown, which the writer
-// reanalyzes once that has lasted long enough.
+// Package reanalysis is the controller of Incident reanalysis requests: it hands every Incident
+// that carries spec.reanalysis to the incident writer, which consumes the request and runs the
+// root-cause analysis again.
 package reanalysis
 
 import (
@@ -39,9 +38,7 @@ func Setup(mgr ctrl.Manager, o Options) error {
 	u.SetGroupVersionKind(gvk)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("incident-reanalysis").
-		For(u, builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
-			return requested(obj) || unanswered(obj)
-		}))).
+		For(u, builder.WithPredicates(predicate.NewPredicateFuncs(requested))).
 		Complete(&reconciler{o: o})
 }
 
@@ -55,25 +52,10 @@ func requested(obj client.Object) bool {
 	return found
 }
 
-// unanswered says the Incident's precondition has answered only unknown (see
-// incident.UnansweredSince).
-func unanswered(obj client.Object) bool {
-	u, ok := obj.(*unstructured.Unstructured)
-	if !ok {
-		return false
-	}
-	_, ok = incident.UnansweredSince(u.Object)
-	return ok
-}
-
 type reconciler struct {
 	o Options
 }
 
 func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	if err := r.o.Writer.Reanalyze(ctx, r.o.AnalysisContext, req.Namespace, req.Name); err != nil {
-		return ctrl.Result{}, err
-	}
-	wait, err := r.o.Writer.RepairCheck(ctx, r.o.AnalysisContext, req.Namespace, req.Name)
-	return ctrl.Result{RequeueAfter: wait}, err
+	return ctrl.Result{}, r.o.Writer.Reanalyze(ctx, r.o.AnalysisContext, req.Namespace, req.Name)
 }
