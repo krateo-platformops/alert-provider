@@ -4,5 +4,8 @@ description: Turns each firing of an observability Alert into an Incident with a
 type: application
 version: CHART_VERSION
 appVersion: "CHART_VERSION"
+home: https://krateo.io
 icon: https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
+sources:
+  - https://github.com/krateo-platformops/alert-provider
 keywords: [krateo, observability, alerts, autopilot]
