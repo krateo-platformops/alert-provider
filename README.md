@@ -26,6 +26,11 @@ The incident controller (incident-controller) runs the scripts from there. See
 
 HyperDX's webhook is acked (202) and logged; the reconciler's pass is what fires an alert.
 
+It reconciles the Alerts of every namespace. Only an Alert in its own namespace (`NAMESPACE`)
+opens Incidents; an Alert in any other namespace, a tenant's, is pushed to HyperDX as
+`<namespace>/<name>` and mirrors its state with no Incident and no RCA, since incident-agent reads
+the whole platform. See [docs/overview.md](docs/overview.md#namespaces).
+
 ## Build
 Image is built + pushed by CI (`.github/workflows/release.yaml`) to
 `ghcr.io/krateo-platformops/alert-provider` on push to `main` / tags. No local docker push.
@@ -36,7 +41,7 @@ Image is built + pushed by CI (`.github/workflows/release.yaml`) to
 The reconciler creates the HyperDX webhook and alerts from the `Alert` CRs.
 
 ## Config (env)
-- `NAMESPACE` (default `krateo-system`) — the namespace of its Alerts and their Incidents.
+- `NAMESPACE` (default `krateo-system`) — the home namespace: its Alerts keep their bare names in HyperDX and alone open Incidents, which it holds, as it does the Secrets and the ModelConfig. Alerts of other namespaces are reconciled too, with no Incident.
 - `AUTOPILOT_A2A_URL` — the RCA agent (chart default `http://incident-agent.krateo-system.svc:8080/`).
 - `A2A_TIMEOUT` (default `900`s) — the longest silence on the RCA stream; above the agentgateway LLM route's 600s timeout.
 - `COMPARE_MODEL_CONFIG` — the kagent ModelConfig whose model compares incidents (default `gemini-flash`).

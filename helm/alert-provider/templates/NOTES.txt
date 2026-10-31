@@ -9,6 +9,10 @@ incident-agent root-cause analysis:
 Manage them as Alert CRs:
   kubectl -n {{ .Release.Namespace }} get alerts
 
+Alerts in any other namespace (a tenant's) are reconciled too, named <namespace>/<name> in HyperDX.
+They mirror their state and notify, but never open an Incident or an RCA:
+  kubectl get alerts -A
+
 UPGRADE NOTE (create-once reconciler): the reconciler never updates an Alert's HyperDX tile after it
 is first created. If you are upgrading from a version that seeded the old `error-log-volume` /
 `warning-log-volume` defaults — or you authored any Alert before this version — those carry a stale

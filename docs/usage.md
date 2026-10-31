@@ -15,7 +15,8 @@ helm install alert-provider \
 ```
 
 Apply `Alert` CRs (see [`examples/alerts/`](../examples/alerts/)). The reconciler creates one
-HyperDX alert per CR, named after its `metadata.name`, and the shared webhook that posts to
+HyperDX alert per CR, named after its `metadata.name` (`<namespace>/<name>` outside the release
+namespace), and the shared webhook that posts to
 `http://krateo-alert-provider.krateo-system.svc:8080/webhook`, which only acknowledges. Every
 pass (60 s) that finds a HyperDX alert ALERT is a firing of its CR. Each firing is recorded on an
 `Incident`, so incident-controller's CRD chart must be installed first; without it a firing is
@@ -127,3 +128,18 @@ kubectl create rolebinding krateo-alert-viewer-devs -n krateo-system --clusterro
 
 A ClusterRoleBinding (`kubectl create clusterrolebinding … --clusterrole=krateo-alert-viewer`)
 grants it in every namespace.
+
+## Alerts in a tenant namespace
+
+An `Alert` may live in any namespace; the provider reconciles them all. Put a tenant's alerts in
+its namespace and bind the viewer role there, so the tenant reads only its own:
+
+```sh
+kubectl create rolebinding krateo-alert-viewer -n team-a --clusterrole=krateo-alert-viewer --group=team-a
+```
+
+Only the platform creates them: the tenant needs no write on Alerts. A tenant's Alert is pushed to
+HyperDX as `<namespace>/<name>` and mirrors its state (`status.state`, `status.phase`), but a
+firing opens no Incident and runs no RCA: incident-agent reads the whole platform, and its analysis
+could quote other tenants' data. Its `metricRef` names a Metric in its own namespace. Only the
+release namespace's Alerts are root-caused.

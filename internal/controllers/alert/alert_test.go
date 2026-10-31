@@ -72,10 +72,11 @@ func newHarness(t *testing.T, alerts ...*v1alpha1.Alert) *harness {
 	hdx := func() *hyperdx.Client { return hyperdx.New(api.URL, "k") }
 	log := logging.NewNopLogger()
 	h.conn = &connector{
+		home:    ns,
 		kube:    kube,
 		hdx:     hdx,
 		webhook: &webhook{kube: kube, name: "krateo-alert-provider", target: "http://x/webhook", log: log},
-		firings: &firings{hdx: hdx, log: log, ctx: ctx, last: map[types.UID]time.Time{},
+		firings: &firings{home: ns, hdx: hdx, log: log, ctx: ctx, last: map[types.UID]time.Time{},
 			run:  func(f func()) { f() },
 			fire: func(_ context.Context, a incident.Alert, _ incident.Records) { h.fired = append(h.fired, a.Name) }},
 		log: log,
@@ -83,11 +84,14 @@ func newHarness(t *testing.T, alerts ...*v1alpha1.Alert) *harness {
 	return h
 }
 
-// reconcile is one reconcile of the Alert, in provider-runtime's order: connect, observe, then
+// reconcile is one reconcile of the home-namespace Alert name.
+func (h *harness) reconcile(name string) error { return h.reconcileIn(ns, name) }
+
+// reconcileIn is one reconcile of the Alert, in provider-runtime's order: connect, observe, then
 // delete or add the finalizer and update, and the status write that closes every reconcile.
-func (h *harness) reconcile(name string) error {
+func (h *harness) reconcileIn(namespace, name string) error {
 	a := &v1alpha1.Alert{}
-	if err := h.kube.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, a); err != nil {
+	if err := h.kube.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, a); err != nil {
 		return err
 	}
 	ext, err := h.conn.Connect(ctx, a)
@@ -123,23 +127,30 @@ func (h *harness) reconcile(name string) error {
 	return persist(nil)
 }
 
-// pass reconciles every Alert once, in name order.
+// pass reconciles every Alert of every namespace once, in namespace then name order.
 func (h *harness) pass(n int) {
 	for range n {
 		var l v1alpha1.AlertList
 		if err := h.kube.List(ctx, &l); err != nil {
 			h.t.Fatal(err)
 		}
-		sort.Slice(l.Items, func(i, j int) bool { return l.Items[i].Name < l.Items[j].Name })
+		sort.Slice(l.Items, func(i, j int) bool {
+			if l.Items[i].Namespace != l.Items[j].Namespace {
+				return l.Items[i].Namespace < l.Items[j].Namespace
+			}
+			return l.Items[i].Name < l.Items[j].Name
+		})
 		for _, a := range l.Items {
-			_ = h.reconcile(a.Name)
+			_ = h.reconcileIn(a.Namespace, a.Name)
 		}
 	}
 }
 
-func (h *harness) get(name string) *v1alpha1.Alert {
+func (h *harness) get(name string) *v1alpha1.Alert { return h.getIn(ns, name) }
+
+func (h *harness) getIn(namespace, name string) *v1alpha1.Alert {
 	a := &v1alpha1.Alert{}
-	if err := h.kube.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, a); err != nil {
+	if err := h.kube.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, a); err != nil {
 		h.t.Fatal(err)
 	}
 	return a

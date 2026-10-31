@@ -32,8 +32,8 @@ type webhook struct {
 
 // ensure returns the source and the webhook id. A webhook it has to create has a new id, so
 // alerts referencing the old one would notify a dead channel: it then deletes the HyperDX alerts
-// the Alerts manage and resets their status, so they rebuild on this webhook. a, the Alert this
-// pass is for, is reset in memory, since its reconcile writes its status.
+// the Alerts of every namespace manage and resets their status, so they rebuild on this webhook. a,
+// the Alert this pass is for, is reset in memory, since its reconcile writes its status.
 func (w *webhook) ensure(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.Alert) (map[string]any, string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -59,7 +59,7 @@ func (w *webhook) ensure(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.A
 
 func (w *webhook) reset(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.Alert) error {
 	var all v1alpha1.AlertList
-	if err := w.kube.List(ctx, &all, client.InNamespace(a.Namespace)); err != nil {
+	if err := w.kube.List(ctx, &all); err != nil {
 		return err
 	}
 	var active []*v1alpha1.Alert

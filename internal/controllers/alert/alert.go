@@ -1,12 +1,15 @@
-// Package alert is the controller of Alert managed resources. The external resource of an Alert is
-// its HyperDX alert and the single-tile dashboard the alert evaluates, both named after the
-// Alert's metadata.name.
+// Package alert is the controller of Alert managed resources, in every namespace. The external
+// resource of an Alert is its HyperDX alert and the single-tile dashboard the alert evaluates,
+// both named after the Alert (see HyperDXName): its metadata.name in the home namespace,
+// <namespace>/<name> in any other.
 //
 // Every poll interval each Alert is one pass: its spec is pushed to HyperDX, the live state
-// (OK/ALERT/PENDING) is mirrored to its status, and a pass that finds it ALERT is one firing,
-// handed to the incident writer off the reconcile, unless the Alert is paused
-// (krateo.io/paused: "true"). A finalizer removes the HyperDX alert and dashboard before the Alert
-// is deleted.
+// (OK/ALERT/PENDING) is mirrored to its status, and a pass that finds it ALERT is one firing. A
+// firing of a home-namespace Alert is handed to the incident writer off the reconcile, unless the
+// Alert is paused (krateo.io/paused: "true"). An Alert in any other namespace (a tenant's) never
+// reaches the writer: its state is mirrored and HyperDX notifies, with no Incident and no RCA,
+// since the incident agent reads the whole platform and its analysis could quote other tenants'
+// data. A finalizer removes the HyperDX alert and dashboard before the Alert is deleted.
 package alert
 
 import (
@@ -51,6 +54,9 @@ var errNotAlert = errors.New("managed resource is not an Alert")
 // Options configure the Alert controller.
 type Options struct {
 	Controller option.ControllerOptions
+	// Namespace is the provider's home namespace. Its Alerts keep their bare names in HyperDX and
+	// alone open Incidents; the Alerts of every other namespace are reconciled and mirrored only.
+	Namespace string
 	// HyperDX is the HyperDX API the alerts are pushed to.
 	HyperDX func() *hyperdx.Client
 	// Webhook names the shared generic webhook, the HyperDX alerts' channel, and where it posts.
@@ -66,6 +72,9 @@ type Options struct {
 // One Alert reconciles at a time: a recreated webhook resets every Alert, and a HyperDX alert two
 // Alerts claim is released by one of them, each of which assumes no other Alert is mid-push.
 func Setup(mgr ctrl.Manager, o Options) error {
+	if o.Namespace == "" {
+		return errors.New("the Alert controller needs its home namespace")
+	}
 	name := reconciler.ControllerName(v1alpha1.AlertGroupKind)
 	log := o.Controller.Logger.WithValues("controller", name)
 
@@ -74,9 +83,10 @@ func Setup(mgr ctrl.Manager, o Options) error {
 		return fmt.Errorf("failed to create event recorder: %w", err)
 	}
 
-	f := &firings{interval: o.Controller.PollInterval, fire: o.Writer.Fire, ctx: o.FiringContext,
+	f := &firings{home: o.Namespace, interval: o.Controller.PollInterval, fire: o.Writer.Fire, ctx: o.FiringContext,
 		hdx: o.HyperDX, log: log, last: map[types.UID]time.Time{}, run: func(f func()) { go f() }}
 	c := &connector{
+		home:    o.Namespace,
 		kube:    mgr.GetClient(),
 		hdx:     o.HyperDX,
 		webhook: &webhook{kube: mgr.GetClient(), name: o.WebhookName, target: o.WebhookTarget, ttl: o.Controller.PollInterval, log: log},
@@ -128,6 +138,7 @@ var changed = predicate.Funcs{
 }
 
 type connector struct {
+	home    string // the home namespace, see HyperDXName
 	kube    client.Client
 	hdx     func() *hyperdx.Client
 	webhook *webhook
@@ -142,7 +153,7 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (reconcile
 	if !ok {
 		return nil, errNotAlert
 	}
-	e := &external{kube: c.kube, hdx: c.hdx(), firings: c.firings, log: c.log.WithValues("alert", a.Namespace+"/"+a.Name)}
+	e := &external{home: c.home, kube: c.kube, hdx: c.hdx(), firings: c.firings, log: c.log.WithValues("alert", a.Namespace+"/"+a.Name)}
 	if meta.WasDeleted(a) {
 		return e, nil // removing the HyperDX objects needs neither
 	}
@@ -188,6 +199,7 @@ func (p plan) String() string {
 }
 
 type external struct {
+	home      string
 	kube      client.Client
 	hdx       *hyperdx.Client
 	firings   *firings
@@ -246,9 +258,15 @@ func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) 
 	return "", nil
 }
 
-func fields(spec v1alpha1.AlertSpec) hyperdx.AlertFields {
+// fields are the HyperDX alert fields of the Alert. An Alert outside the home namespace without a
+// message gets one that does not promise the incident-agent triage it never gets.
+func fields(home string, a *v1alpha1.Alert) hyperdx.AlertFields {
+	spec := a.Spec
 	f := hyperdx.AlertFields{Interval: spec.Interval, Threshold: threshold(spec),
 		ThresholdType: spec.ThresholdType, Message: spec.Message}
+	if f.Message == "" && a.Namespace != home {
+		f.Message = hyperdxName(home, a) + " threshold crossed."
+	}
 	if f.Interval == "" {
 		f.Interval = "5m"
 	}
@@ -271,14 +289,14 @@ func failed(a *v1alpha1.Alert, err error) error {
 
 // specDrift records a push that failed: the live alert does not match the Alert. The state is
 // still mirrored, so a firing alert stays visible.
-func specDrift(a *v1alpha1.Alert, log logging.Logger, err error) error {
+func (e *external) specDrift(a *v1alpha1.Alert, err error) error {
 	a.Status.Phase, a.Status.Error = v1alpha1.PhaseSpecDrift, pyfmt.Cut(err.Error(), 300)
-	log.Info(fmt.Sprintf("[reconciler] Alert %s: spec push failed, phase=SpecDrift (%s)", a.Name, err))
+	e.log.Info(fmt.Sprintf("[reconciler] Alert %s: spec push failed, phase=SpecDrift (%s)", hyperdxName(e.home, a), err))
 	return err
 }
 
 // Observe finds the Alert's HyperDX alert, mirrors its state to the status and plans the push.
-// The HyperDX alert is found by the status id, else by its name, so a status that lost its id, or
+// The HyperDX alert is found by the status id, else by its name (HyperDXName), so a status that lost its id, or
 // a create cut short, adopts its own alert instead of creating a second one. Observe therefore
 // never reports it missing: that would arm provider-runtime's create handshake, under which an
 // interrupted create blocks the Alert until a person clears an annotation. A missing alert is
@@ -333,7 +351,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 	if alert == nil {
 		for _, l := range live {
-			if l["name"] == a.Name && hyperdx.ID(l) != e.plan.deleteShared {
+			if l["name"] == hyperdxName(e.home, a) && hyperdx.ID(l) != e.plan.deleteShared {
 				alert = l
 				break
 			}
@@ -382,14 +400,14 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 			live, liveSrc, found, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 			if err != nil {
 				e.firings.start(a, e.source, st)
-				return reconciler.ExternalObservation{}, specDrift(a, e.log, err)
+				return reconciler.ExternalObservation{}, e.specDrift(a, err)
 			}
 			e.plan.where = found && hyperdx.SelectDrift(live, liveSrc, e.tileSource, e.sel)
 		} else {
 			liveWhere, found, err := e.hdx.TileWhere(ctx, e.plan.dashboardID)
 			if err != nil {
 				e.firings.start(a, e.source, st)
-				return reconciler.ExternalObservation{}, specDrift(a, e.log, err)
+				return reconciler.ExternalObservation{}, e.specDrift(a, err)
 			}
 			e.plan.where = found && liveWhere != a.Spec.Where
 			// A tile that aggregated (an Alert switched back to counting) can hold the same
@@ -404,7 +422,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 			}
 		}
 	}
-	e.plan.drift = hyperdx.AlertDrift(alert, a.Name, fields(a.Spec))
+	e.plan.drift = hyperdx.AlertDrift(alert, hyperdxName(e.home, a), fields(e.home, a))
 
 	e.firings.start(a, e.source, st)
 	if e.plan.deleteShared != "" || e.plan.where || len(e.plan.drift) > 0 {
@@ -418,20 +436,23 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 // release leaves a HyperDX alert several Alerts claim to the Alert it is named after, if any. Any
 // other claimant drops the id and creates its own alert in this pass; a shared alert named after
 // none of them is deleted (by Update), so it stops evaluating one Alert's `where` for another.
+// The claimants are the Alerts of every namespace, by their HyperDX names: one HyperDX alert serves
+// one Alert, whichever namespace it is in.
 func (e *external) release(ctx context.Context, a *v1alpha1.Alert, byID map[string]map[string]any) error {
 	id := a.Status.HyperdxAlertID
 	if id == "" {
 		return nil
 	}
 	var all v1alpha1.AlertList
-	if err := e.kube.List(ctx, &all, client.InNamespace(a.Namespace)); err != nil {
+	if err := e.kube.List(ctx, &all); err != nil {
 		return err
 	}
-	claimants := []string{a.Name}
+	self := hyperdxName(e.home, a)
+	claimants := []string{self}
 	for i := range all.Items {
 		o := &all.Items[i]
 		if o.UID != a.UID && !meta.WasDeleted(o) && o.Status.HyperdxAlertID == id {
-			claimants = append(claimants, o.Name)
+			claimants = append(claimants, hyperdxName(e.home, o))
 		}
 	}
 	if len(claimants) < 2 {
@@ -445,7 +466,7 @@ func (e *external) release(ctx context.Context, a *v1alpha1.Alert, byID map[stri
 			break
 		}
 	}
-	if owner == a.Name {
+	if owner == self {
 		return nil
 	}
 	if owner == "" && byID[id] != nil {
@@ -453,7 +474,7 @@ func (e *external) release(ctx context.Context, a *v1alpha1.Alert, byID map[stri
 		delete(byID, id)
 	}
 	a.Status.HyperdxAlertID, a.Status.Phase = "", v1alpha1.PhasePending
-	e.log.Info(fmt.Sprintf("[reconciler] Alert %s: released shared hyperdx %s", a.Name, id))
+	e.log.Info(fmt.Sprintf("[reconciler] Alert %s: released shared hyperdx %s", self, id))
 	return nil
 }
 
@@ -470,7 +491,7 @@ func (e *external) Update(ctx context.Context, mg resource.Managed) error {
 	}
 	if why := e.plan.invalid; why != "" {
 		a.Status.Phase, a.Status.Error = v1alpha1.PhaseInvalid, why
-		e.log.Info(fmt.Sprintf("[reconciler] Alert %s refused: %s", a.Name, why))
+		e.log.Info(fmt.Sprintf("[reconciler] Alert %s refused: %s", hyperdxName(e.home, a), why))
 		return nil
 	}
 	if id := e.plan.deleteShared; id != "" {
@@ -486,11 +507,11 @@ func (e *external) Update(ctx context.Context, mg resource.Managed) error {
 
 // create makes the dashboard tile, then an alert on it named after the Alert.
 func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
-	dash, tile, err := e.hdx.EnsureTile(ctx, "krateo-alert-"+a.Name, e.tileSource, e.sel, e.plan.taken)
+	dash, tile, err := e.hdx.EnsureTile(ctx, dashboardName(e.home, a), e.tileSource, e.sel, e.plan.taken)
 	if err != nil {
 		return failed(a, err)
 	}
-	res, err := e.hdx.EnsureAlert(ctx, a.Name, dash, tile, e.webhookID, fields(a.Spec))
+	res, err := e.hdx.EnsureAlert(ctx, hyperdxName(e.home, a), dash, tile, e.webhookID, fields(e.home, a))
 	if err != nil {
 		return failed(a, err)
 	}
@@ -499,7 +520,7 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	a.Status.OkSince = OkSince(a.Status, st, now())
 	a.Status.State, a.Status.Phase = st, v1alpha1.PhaseSynced
 	a.SetConditions(prv1.Available())
-	e.log.Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", a.Name, a.Status.HyperdxAlertID, st))
+	e.log.Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", hyperdxName(e.home, a), a.Status.HyperdxAlertID, st))
 	e.firings.start(a, e.source, st)
 	return nil
 }
@@ -514,20 +535,20 @@ func (e *external) push(ctx context.Context, a *v1alpha1.Alert) error {
 	}
 	var changed []string
 	if e.plan.where {
-		if err := e.hdx.UpdateTile(ctx, e.plan.dashboardID, "krateo-alert-"+a.Name, e.tileSource, e.sel, tile); err != nil {
-			return specDrift(a, e.log, err)
+		if err := e.hdx.UpdateTile(ctx, e.plan.dashboardID, dashboardName(e.home, a), e.tileSource, e.sel, tile); err != nil {
+			return e.specDrift(a, err)
 		}
 		changed = append(changed, "where")
 	}
 	if len(e.plan.drift) > 0 {
-		if _, err := e.hdx.UpdateAlert(ctx, e.plan.alertID, a.Name, e.plan.dashboardID, tile, e.webhookID, fields(a.Spec)); err != nil {
-			return specDrift(a, e.log, err)
+		if _, err := e.hdx.UpdateAlert(ctx, e.plan.alertID, hyperdxName(e.home, a), e.plan.dashboardID, tile, e.webhookID, fields(e.home, a)); err != nil {
+			return e.specDrift(a, err)
 		}
 		changed = append(changed, e.plan.drift...)
 	}
 	a.Status.Phase, a.Status.Error = v1alpha1.PhaseSynced, ""
 	if len(changed) > 0 {
-		e.log.Info(fmt.Sprintf("[reconciler] Alert %s: pushed %s to hyperdx %s", a.Name, strings.Join(changed, ", "), e.plan.alertID))
+		e.log.Info(fmt.Sprintf("[reconciler] Alert %s: pushed %s to hyperdx %s", hyperdxName(e.home, a), strings.Join(changed, ", "), e.plan.alertID))
 	}
 	return nil
 }
@@ -547,14 +568,16 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) error {
 	}
 	a.Status.HyperdxAlertID, a.Status.HyperdxDashboardID = "", ""
 	e.firings.forget(a.UID)
-	e.log.Info(fmt.Sprintf("[reconciler] finalized Alert %s (removed HyperDX alert+dashboard)", a.Name))
+	e.log.Info(fmt.Sprintf("[reconciler] finalized Alert %s (removed HyperDX alert+dashboard)", hyperdxName(e.home, a)))
 	return nil
 }
 
 // firings hands an Alert's firings to the incident writer: one per poll interval while the
 // HyperDX alert is ALERT. Reconciles the poll did not schedule (a spec edit, an error's retry)
-// fire nothing, so an alert fires once a pass as it always has.
+// fire nothing, so an alert fires once a pass as it always has. Only the home namespace's Alerts
+// reach the writer.
 type firings struct {
+	home     string // the home namespace: the only one whose firings open Incidents
 	interval time.Duration
 	fire     func(context.Context, incident.Alert, incident.Records)
 	ctx      context.Context
@@ -582,7 +605,14 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 	f.last[a.UID] = time.Now()
 	f.mu.Unlock()
 	if a.Paused() {
-		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", a.Name))
+		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", hyperdxName(f.home, a)))
+		return
+	}
+	// The RCA agent reads the whole platform, so its analysis of a tenant's alert could quote other
+	// tenants' data: an Alert outside the home namespace is the ALERT state mirrored on it and
+	// HyperDX's notification, never a comparison, an Incident or an RCA.
+	if a.Namespace != f.home {
+		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is outside %s; no incident (only %s Alerts are root-caused)", hyperdxName(f.home, a), f.home, f.home))
 		return
 	}
 	// The incident writer compares and root-causes the LOG RECORDS an alert counts. A metric has
@@ -590,7 +620,7 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 	// threshold), so an aggregated firing is the ALERT state mirrored on the Alert, and HyperDX's
 	// notification through the webhook.
 	if a.Aggregated() {
-		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", a.Name))
+		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", hyperdxName(f.home, a)))
 		return
 	}
 	alert := incident.Alert{Namespace: a.Namespace, Alert: compare.Alert{
