@@ -18,8 +18,10 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/krateo-platformops/provider-runtime/pkg/controller"
@@ -27,6 +29,7 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 
 	"github.com/krateo-platformops/alert-provider/apis"
+	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
 	"github.com/krateo-platformops/alert-provider/internal/bootstrap"
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/controllers/alert"
@@ -84,7 +87,7 @@ func run(log logging.Logger) error {
 	namespace := getenv("NAMESPACE", "krateo-system")
 	interval := time.Duration(envInt("RECONCILE_INTERVAL", 60, 0)) * time.Second
 	a2a := &incident.A2A{
-		URL:     getenv("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/"),
+		URL: getenv("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/"),
 		// Above the agentgateway LLM route's 600s timeout: a slow model call is silence on the stream.
 		Timeout: time.Duration(envInt("A2A_TIMEOUT", 900, 0)) * time.Second,
 	}
@@ -108,17 +111,19 @@ func run(log logging.Logger) error {
 	if err != nil {
 		return fmt.Errorf("cannot get API server rest config: %w", err)
 	}
+	// Before the manager: its cache resolves the kinds of cacheOptions' ByObject against the scheme
+	// when it is created. It is client-go's global scheme, the manager's default, which the event
+	// recorder also reads.
+	if err := apis.AddToScheme(clientgoscheme.Scheme); err != nil {
+		return fmt.Errorf("cannot add APIs to scheme: %w", err)
+	}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		// The Role is namespaced: the Alerts are cached in the release namespace only.
-		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
+		Cache:                  cacheOptions(namespace),
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
 	})
 	if err != nil {
 		return fmt.Errorf("cannot create controller manager: %w", err)
-	}
-	if err := apis.AddToScheme(mgr.GetScheme()); err != nil {
-		return fmt.Errorf("cannot add APIs to scheme: %w", err)
 	}
 
 	comparer := &incident.Comparer{Reader: mgr.GetAPIReader(), Namespace: namespace, ModelConfig: compareModelConfig,
@@ -148,6 +153,7 @@ func run(log logging.Logger) error {
 				},
 				Timeout: 2 * time.Minute,
 			},
+			Namespace:     namespace,
 			HyperDX:       hdx,
 			WebhookName:   getenv("WEBHOOK_NAME", "krateo-alert-provider"),
 			WebhookTarget: getenv("WEBHOOK_TARGET_URL", "http://krateo-alert-provider.krateo-system.svc:8080/webhook"),
@@ -176,6 +182,23 @@ func run(log logging.Logger) error {
 		return err
 	case <-ctx.Done():
 		return nil
+	}
+}
+
+// cacheOptions caches the Alerts, and the Metrics their metricRef names, in every namespace: a
+// tenant's Alerts live in its own namespace, where Kubernetes RBAC decides who reads them. All else
+// (Incidents, Secrets, the ModelConfig) is cached in the release namespace only, which the
+// namespaced Role covers; the chart's ClusterRole grants the Alerts and Metrics cluster-wide.
+func cacheOptions(namespace string) cache.Options {
+	everywhere := func() cache.ByObject { // one map each: the cache defaults the configs in place
+		return cache.ByObject{Namespaces: map[string]cache.Config{cache.AllNamespaces: {}}}
+	}
+	return cache.Options{
+		DefaultNamespaces: map[string]cache.Config{namespace: {}},
+		ByObject: map[client.Object]cache.ByObject{
+			&v1alpha1.Alert{}:  everywhere(),
+			&v1alpha1.Metric{}: everywhere(),
+		},
 	}
 }
 

@@ -26,8 +26,8 @@ import (
 
 // DefaultWebhookBody is the generic webhook's body. A generic webhook body can use only {{title}},
 // {{body}}, {{link}}, {{state}}, {{startTime}}, {{endTime}} and {{eventId}} (a hash); there is no
-// alert id. {{title}} is a state emoji plus the HyperDX alert name, which is its Alert CR's
-// metadata.name. {{state}} is ALERT on a firing and OK on a resolve. The provider only logs a
+// alert id. {{title}} is a state emoji plus the HyperDX alert name: its Alert CR's metadata.name,
+// <namespace>/<name> outside the provider's namespace (alert.HyperDXName). {{state}} is ALERT on a firing and OK on a resolve. The provider only logs a
 // notification: the reconcile fires alerts.
 const DefaultWebhookBody = `{"alertName":"{{title}}","state":"{{state}}","source":"hyperdx-alert"}`
 
@@ -503,7 +503,7 @@ func (c *Client) UpdateAlert(ctx context.Context, alertID, name, dashboardID, ti
 }
 
 // EnsureAlert creates the tile alert, or reconciles the one already carrying this name. name is
-// the Alert CR's metadata.name, unique per namespace, so one name is one CR. It returns {id, state}.
+// the Alert CR's HyperDX name (alert.HyperDXName), unique across namespaces, so one name is one CR. It returns {id, state}.
 func (c *Client) EnsureAlert(ctx context.Context, name, dashboardID, tileID, webhookID string, f AlertFields) (map[string]any, error) {
 	alerts, err := c.ListAlerts(ctx)
 	if err != nil {

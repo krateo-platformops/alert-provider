@@ -21,5 +21,12 @@ timestamp: 2026-08-20T00:00:00Z
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |
 | `config.reconcileInterval` | `60` | seconds between reconciler passes; each pass that finds an alert ALERT is one firing |
 
+The release namespace is the home namespace (`NAMESPACE`): its Alerts keep their bare names in
+HyperDX and alone open Incidents, which it holds with the `hyperdx-api-token` Secret and the
+ModelConfig. The provider reconciles the Alerts, and reads the Metrics, of every namespace: the
+Role `krateo-alert-provider` covers the release namespace, the ClusterRole
+`krateo-alert-provider-alerts` (bound to the `krateo-alert-provider` ServiceAccount) the Alerts,
+their status, Metrics and Events everywhere.
+
 Runtime env (set on the Deployment) carries these, plus `A2A_TIMEOUT` (900 s, the longest silence on the RCA stream) and
 `COMPARE_TIMEOUT` (60 s, one comparison). See `helm/alert-provider/templates/deployment.yaml`.

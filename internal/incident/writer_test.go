@@ -241,10 +241,29 @@ func TestItIsAnalyzingUntilTheAnalysisIsWritten(t *testing.T) {
 	}
 }
 
-func TestTheIncidentLivesInTheAlertsNamespace(t *testing.T) {
+func TestTheIncidentLivesInTheHomeNamespace(t *testing.T) {
 	c := newCase(t)
+	c.fire(fireOpt{ns: ns})
+	eq(t, "namespace", c.kube.only(ns)["spec"].(map[string]any)["alertRef"].(map[string]any)["namespace"], ns)
+}
+
+// A tenant's alert is never root-caused: the RCA agent reads the whole platform. Its firing reads
+// no record and no incident, compares nothing, writes nothing and runs no RCA, even with an
+// analyzed incident of that alert to compare with.
+func TestAFiringOutsideTheHomeNamespaceOpensComparesAndAnalyzesNothing(t *testing.T) {
+	c := newCase(t)
+	c.kube.put("team-a", "cd-not-ready-1", alertName, seed{state: "Open", rootCause: "the cause"})
+	c.kube.calls = nil
 	c.fire(fireOpt{ns: "team-a"})
-	eq(t, "namespace", c.kube.only("team-a")["spec"].(map[string]any)["alertRef"].(map[string]any)["namespace"], "team-a")
+	eq(t, "kube calls", len(c.kube.calls), 0)
+	eq(t, "incidents", c.kube.count(), 1)
+	eq(t, "compared", len(c.compared), 0)
+	eq(t, "rca", len(c.rca), 0)
+	eq(t, "records read", len(c.reads), 0)
+	// the home namespace's alert of the same name is root-caused as always
+	c.fire(fireOpt{})
+	eq(t, "home rca", len(c.rca), 1)
+	eq(t, "home incident", c.kube.only(ns)["spec"].(map[string]any)["alertRef"], map[string]any{"name": alertName, "namespace": ns})
 }
 
 func TestAnAlertNameOver63CharactersOpensNothing(t *testing.T) {

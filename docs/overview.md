@@ -46,12 +46,13 @@ and dashboard. A reconcile is one pass, every `config.reconcileInterval`:
 
 ## Alert identity
 
-One `Alert` CR is one HyperDX alert and its own incidents, keyed on the CR's `metadata.name`.
+One `Alert` CR is one HyperDX alert and its own incidents, keyed on the CR's namespace and `metadata.name`.
 `spec.displayName` is only a label and may repeat.
 
-- The reconciler names each HyperDX alert after its CR's `metadata.name`, on a single-tile
-  dashboard `krateo-alert-<name>` that no other alert evaluates. An alert claimed by several CRs
-  stays with the CR it is named after; the others create their own.
+- The reconciler names each HyperDX alert after its CR (`HyperDXName`): its `metadata.name` in the
+  home namespace, `<namespace>/<name>` in any other, on a single-tile dashboard
+  `krateo-alert-<that name>` that no other alert evaluates. An alert claimed by several CRs, in
+  any namespaces, stays with the CR it is named after; the others create their own.
 - HyperDX's webhook template has no alert id. The shared webhook body is
   `{"alertName":"{{title}}","state":"{{state}}","source":"hyperdx-alert"}`, and the title is a state
   emoji plus the HyperDX alert name. The reconciler updates an existing webhook whose body differs.
@@ -60,12 +61,38 @@ One `Alert` CR is one HyperDX alert and its own incidents, keyed on the CR's `me
   `spec.alertRef {name, namespace}`. A name over 63 characters cannot be a label value, so such an
   `Alert` opens no incident.
 
+## Namespaces
+
+The provider reconciles the `Alert`s of every namespace, and reads the `Metric` a `metricRef`
+names in the Alert's own namespace. A tenant's Alerts live in its namespace, created by the
+platform, and Kubernetes RBAC decides who reads them: a tenant gets read-only access to the Alerts
+of its own namespace (see [usage](usage.md#who-can-see-alerts)). Platform-wide Alerts stay in the
+home namespace, the release namespace (`NAMESPACE`).
+
+- **Names.** HyperDX has one namespace of names. A home Alert keeps its bare `metadata.name`, as
+  every earlier release named it, so a live install's HyperDX alerts and dashboards are adopted as
+  they are. Any other Alert is `<namespace>/<name>`: neither a namespace nor an object name holds
+  `/`, so two namespaces' `llm-budget` are `team-a/llm-budget` and `team-b/llm-budget` and never
+  a home Alert's name. The longest is 63 + 1 + 253 = 317 characters, under HyperDX's 512.
+- **No incident outside home.** A firing of an Alert outside the home namespace mirrors `ALERT`
+  on its status and notifies through the webhook, and that is all: no comparison, no Incident, no
+  RCA. incident-agent reads the whole platform, so an analysis of a tenant's alert could quote other
+  tenants' data. The incident writer refuses such a firing too, whatever hands it one. An Alert
+  outside home with no `spec.message` gets `<namespace>/<name> threshold crossed.`, without the
+  default's promise of a triage.
+- **What stays home.** Incidents, the `hyperdx-api-token` Secret, the comparison's ModelConfig,
+  the seeded default Alerts, the webhook and its Service.
+- **Cache and RBAC.** The manager caches Alerts and Metrics in every namespace, everything else
+  in the home one. The Role `krateo-alert-provider` keeps the home namespace's grants; the
+  ClusterRole `krateo-alert-provider-alerts` reads and writes Alerts and their status, reads
+  Metrics and writes Events everywhere, bound to the controller's own ServiceAccount.
+
 ## Incidents
 
 An alert has an incident per problem, and several may be open at once; an incident is open in any
 state but `Resolved` and `Closed`. For each firing, the incident writer (`internal/incident`):
 
-1. lists the Incidents in the Alert's namespace labelled with the Alert's name;
+1. lists the Incidents in the home namespace, the only one whose Alerts reach the writer (see [Namespaces](#namespaces)), labelled with the Alert's name;
 2. asks the comparison model, in one call over the open incidents that have an analysis (a root
    cause, or a report from an RCA that did not fail), which one causes the alert's current
    records (see [Incident comparison](#incident-comparison)). That one covers the firing: no RCA,

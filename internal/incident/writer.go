@@ -59,7 +59,8 @@ type Records func(ctx context.Context, where string, seconds int) ([]compare.Row
 
 // Config configures a Writer.
 type Config struct {
-	// Namespace holds the Alerts and their Incidents.
+	// Namespace is the home namespace: its Alerts alone open Incidents, which it holds. A firing
+	// of an Alert in any other namespace (a tenant's) is refused: the RCA reads the whole platform.
 	Namespace string
 	// MaxConcurrentAnalyses is how many RCAs run at once. One RCA reads up to ~1M input tokens a
 	// minute, so alerts that fire together (a startup, one fault behind several alerts) would
@@ -468,9 +469,13 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 
 // Fire is one evaluation of a firing Alert, from its reconcile (about every 60 s). The firing
 // counts on the incident pick chooses, or opens a new one whose RCA then runs in this call. The
-// alert's name keys the incidents and their label, its namespace holds them, spec.interval is the
-// Resolved grace window and the lookback of its records. One evaluation per alert runs at a time:
-// while one is still comparing, the alert's next firing is skipped.
+// alert's name keys the incidents and their label, the home namespace holds them, spec.interval is
+// the Resolved grace window and the lookback of its records. One evaluation per alert runs at a
+// time: while one is still comparing, the alert's next firing is skipped.
+//
+// An alert outside the home namespace is refused before anything is read, compared or written:
+// the RCA agent reads the whole platform, so its analysis of a tenant's alert could quote other
+// tenants' data. The Alert controller never hands one over; this is the writer's own guard.
 func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	if pyfmt.Len(alert.Name) > 63 {
 		w.log.Info(fmt.Sprintf("[incident] alert %s: a name over 63 characters cannot label an Incident; skipping", pyfmt.Repr(alert.Name)))
@@ -479,6 +484,10 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	ns := alert.Namespace
 	if ns == "" {
 		ns = w.cfg.Namespace
+	}
+	if ns != w.cfg.Namespace {
+		w.log.Info(fmt.Sprintf("[incident] alert %s/%s: outside %s, no incident and no RCA", ns, alert.Name, w.cfg.Namespace))
+		return
 	}
 	key := ns + "/" + alert.Name
 	w.mu.Lock()

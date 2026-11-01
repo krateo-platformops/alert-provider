@@ -46,6 +46,9 @@ timestamp: 2026-08-20T00:00:00Z
 - An RCA that failed transiently (the call failed, the answer was empty, or it was only kagent's `LLM error:`) runs again, 2 more times by default, 2 then 4 minutes later (`config.analysisRetries`, `config.analysisRetryDelay`). The incident stays `Analyzing` meanwhile.
 - A person can ask for a new analysis of an `Open` or `Verifying` incident with `spec.reanalysis`, optionally with feedback. The provider clears the old analysis and its check results, records the request in `status.reanalysis`, and runs the RCA again with the previous analysis, its scripts' last results and the feedback in the prompt. The Role gains `watch` on incidents.
 
+## 2026-10-31
+- Alerts are reconciled in every namespace: a tenant's Alerts live in its namespace, where RBAC decides who reads them. Outside the release namespace an Alert is named `<namespace>/<name>` in HyperDX (home Alerts keep their bare names, so live HyperDX objects are adopted unchanged) and mirrors its state, but its firing opens no Incident and runs no comparison or RCA: incident-agent reads the whole platform. The incident writer refuses such a firing too. The chart adds the ClusterRole `krateo-alert-provider-alerts` (Alerts, their status, Metrics, Events) for the controller's ServiceAccount; the Role keeps the release namespace's grants.
+
 ## 2026-10-22
 - `A2A_TIMEOUT` defaults to 900 s. The RCA stream is silent while the agent waits on a model call, and the agentgateway LLM route now waits up to 600 s for one; at 180 s a slow provider failed the RCA and every retry.
 - The RCA prompt's check rules: full resource names in every script (`deployments.apps`, not `deployment`), `any`/`all` for yes/no jq tests, text into jq with `--arg`, and a precondition whose object is gone exits 0. Its examples follow them.

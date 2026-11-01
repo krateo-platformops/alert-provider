@@ -2,7 +2,9 @@
 # Alert's HyperDX state every pass; a firing is covered by the open incident the comparison model
 # (config.compareModelConfig) names as its cause, or opens an Incident CR
 # (incident-controller's CRD) whose RCA the RCA agent (config.autopilotA2aUrl, incident-agent by
-# default) writes. HyperDX's webhook posts to
+# default) writes. It reconciles the Alerts of every namespace; only the release namespace's open
+# Incidents, a tenant namespace's Alert mirrors its state with no Incident and no RCA. HyperDX's
+# webhook posts to
 # http://krateo-alert-provider.krateo-system.svc:8080/webhook, which only acknowledges. Image is
 # tag-driven (values.image.tag = chart appVersion), multi-arch (linux/amd64 + linux/arm64). Bump
 # this version tag alongside any code change that needs to reach the cluster.
@@ -27,14 +29,11 @@ rules:
   - apiGroups: ["observability.krateo.io"]
     resources: ["incidents", "incidents/status"]
     verbs: ["create", "get", "list", "watch", "patch", "update"]
-  # the reconciler reads Alert CRs (desired), seeds defaults, and writes their status
+  # the reconciler seeds the default Alerts here; reading and writing the Alerts of every
+  # namespace is the ClusterRole krateo-alert-provider-alerts below
   - apiGroups: ["observability.krateo.io"]
-    resources: ["alerts", "alerts/status"]
-    verbs: ["get", "list", "watch", "create", "patch", "update"]
-  # a metric Alert's metricRef names a Metric, read to build its tile
-  - apiGroups: ["observability.krateo.io"]
-    resources: ["metrics"]
-    verbs: ["get", "list", "watch"]
+    resources: ["alerts"]
+    verbs: ["create"]
   # the key-bootstrap Job (same SA) writes the hyperdx-api-token Secret; the comparison reads a
   # ModelConfig's apiKeySecret
   - apiGroups: [""]
@@ -44,10 +43,6 @@ rules:
   - apiGroups: ["kagent.dev"]
     resources: ["modelconfigs"]
     verbs: ["get"]
-  # provider-runtime records Events on the Alerts it reconciles
-  - apiGroups: ["events.k8s.io"]
-    resources: ["events"]
-    verbs: ["create", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -63,9 +58,49 @@ subjects:
     name: krateo-alert-provider
     namespace: krateo-system
 ---
+# The Alerts of every namespace. A tenant's Alerts live in its own namespace, where Kubernetes RBAC
+# decides who reads them (people get krateo-alert-viewer, or a namespaced copy of it); this
+# controller is platform, not a tenant, and reconciles them all into HyperDX. An Alert outside the
+# release namespace only mirrors its state: it never opens an Incident or an RCA, so nothing here
+# reaches past the Alerts, their Metrics and their Events.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: krateo-alert-provider-alerts
+rules:
+  # the reconciler reads Alert CRs (desired), adds and removes its finalizer, and writes their
+  # status; a recreated webhook resets the status of every Alert
+  - apiGroups: ["observability.krateo.io"]
+    resources: ["alerts"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["observability.krateo.io"]
+    resources: ["alerts/status"]
+    verbs: ["get", "patch", "update"]
+  # a metric Alert's metricRef names a Metric in its namespace, read to build its tile
+  - apiGroups: ["observability.krateo.io"]
+    resources: ["metrics"]
+    verbs: ["get", "list", "watch"]
+  # provider-runtime records Events on the Alerts it reconciles, in the Alert's namespace
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krateo-alert-provider-alerts
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: krateo-alert-provider-alerts
+subjects:
+  - kind: ServiceAccount
+    name: krateo-alert-provider
+    namespace: krateo-system
+---
 # The cluster-wide READ of the analyzer identity, group krateo:alert-provider: the RCA's k8s
-# tool calls. The namespaced Role above covers the pod's own writes (incidents, alerts, the
-# hyperdx-token Secret).
+# tool calls. The namespaced Role above covers the pod's own writes (incidents, the seeded alerts,
+# the hyperdx-token Secret), krateo-alert-provider-alerts the Alerts of every namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
