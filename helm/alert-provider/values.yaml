@@ -60,7 +60,8 @@ config:
   # The flagship platform-health signal: Krateo control-plane compositions failing to reconcile
   # (controller-runtime's "Reconciler error" log + the provider's CannotObserveExternalResource event),
   # cluster-wide but excluding every service that carries or evaluates telemetry (else it matches
-  # HyperDX's own echo of this query and diagnoses itself), and incident-controller, whose own
+  # HyperDX's own echo of this query and diagnoses itself), and incident-controller (renamed
+  # incident-provider; both names stay excluded while either can be logging), whose own
   # "Reconciler error" lines are about Incidents, not compositions (~21k rows a day on krateo-057,
   # which kept this alert firing every minute).
   - name: krateo-composition-reconcile-error
@@ -68,7 +69,7 @@ config:
     where: >-
       (positionCaseInsensitive(Body, 'Reconciler error') > 0
        OR JSONExtractString(Body, 'object', 'reason') = 'CannotObserveExternalResource')
-      AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider', 'incident-controller',
+      AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider', 'incident-controller', 'incident-provider',
           'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
           'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
       AND JSONExtractString(Body, 'type') != 'DELETED'
