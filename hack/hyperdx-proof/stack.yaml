@@ -1,6 +1,9 @@
-# The data side of the ratio-alert proof: a plain ClickHouse, a plain MongoDB for HyperDX, and the
+# The data side of the HyperDX proof: a plain ClickHouse, a plain MongoDB for HyperDX, and the
 # real OTel ClickHouse exporter (the collector version the CMP ships), which creates the otel_*
-# tables HyperDX's default sources read. Disposable: kind only.
+# tables HyperDX's default sources read. Disposable: kind only. Hardened like any manifest in this
+# repo: non-root (UID/GID > 10000), no privilege escalation, every capability dropped, read-only
+# root filesystem with writable emptyDirs only where each server writes, RuntimeDefault seccomp,
+# requests and limits, images pinned by digest.
 apiVersion: v1
 kind: Namespace
 metadata: {name: hdx-proof}
@@ -13,14 +16,34 @@ spec:
   template:
     metadata: {labels: {app: clickhouse}}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10101
+        runAsGroup: 10101
+        fsGroup: 10101
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: clickhouse
-          image: clickhouse/clickhouse-server:26.8-alpine@sha256:f5443f9ffa48f0154cdd50cab39fed732201762574a27f04f1f564bbba81832d
+          # The ClickHouse Docker Official Image, the 26.8 line the CMP runs.
+          image: clickhouse:26.8.36.3@sha256:1201467edf24c3a40c5670aceaece9b51479fbd65e8aeea22e246d5816a322ea
           env: [{name: CLICKHOUSE_SKIP_USER_SETUP, value: "1"}]
           ports: [{containerPort: 8123}, {containerPort: 9000}]
           readinessProbe: {httpGet: {path: /ping, port: 8123}, periodSeconds: 5}
-          volumeMounts: [{name: data, mountPath: /var/lib/clickhouse}]
-      volumes: [{name: data, emptyDir: {}}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "2", memory: 3Gi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/clickhouse}
+            - {name: logs, mountPath: /var/log/clickhouse-server}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: logs, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
 ---
 apiVersion: v1
 kind: Service
@@ -37,13 +60,32 @@ spec:
   template:
     metadata: {labels: {app: mongo}}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10999
+        runAsGroup: 10999
+        fsGroup: 10999
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: mongo
-          image: mongo:7.0
+          image: mongo:7.0@sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4
           ports: [{containerPort: 27017}]
           readinessProbe: {tcpSocket: {port: 27017}, periodSeconds: 5}
-          volumeMounts: [{name: data, mountPath: /data/db}]
-      volumes: [{name: data, emptyDir: {}}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: data, mountPath: /data/db}
+            - {name: config, mountPath: /data/configdb}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: config, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
 ---
 apiVersion: v1
 kind: Service
@@ -87,11 +129,23 @@ spec:
   template:
     metadata: {labels: {app: otel-collector}}
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: collector
           image: otel/opentelemetry-collector-contrib:0.158.0@sha256:c5918f78992ee73b0d6f0e599423ac5ec52dd5d9726733114d6eca53d5a32ed5
           args: ["--config=/conf/config.yaml"]
           ports: [{containerPort: 4318}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
           volumeMounts: [{name: conf, mountPath: /conf}]
       volumes: [{name: conf, configMap: {name: collector}}]
 ---
