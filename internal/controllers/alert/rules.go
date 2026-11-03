@@ -106,6 +106,24 @@ func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Selec
 	default:
 		return hyperdx.Select{}, fmt.Sprintf("aggregation %q is not one of avg, max, min, sum, p95, increase.", spec.Aggregation)
 	}
+	if spec.Ratio == nil {
+		return sel, ""
+	}
+	// A ratio divides two totals of the same metric. Only a total divides meaningfully: an
+	// average, extreme or percentile over a ratio's denominator is not a share of anything.
+	if spec.Aggregation != v1alpha1.AggregationSum && spec.Aggregation != v1alpha1.AggregationIncrease {
+		return hyperdx.Select{}, fmt.Sprintf("a ratio divides two totals: aggregation must be sum or increase, not %s.", spec.Aggregation)
+	}
+	den := LabelsWhere(spec.Ratio.Labels)
+	// The same points over and under: the ratio is 1 wherever there is data, so the alert carries
+	// no information, the arithmetic Tautology refuses for counts.
+	if den == sel.Where {
+		return hyperdx.Select{}, "ratio.labels keep the same points as labels, so the ratio is always 1. " +
+			"labels select the numerator (e.g. the failing requests), ratio.labels the denominator (all of them)."
+	}
+	d := sel
+	d.Where = den
+	sel.Ratio = &d
 	return sel, ""
 }
 

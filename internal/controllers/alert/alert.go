@@ -416,7 +416,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 				live, _, _, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 				// A tile with no aggFn is a count: only an explicit other function is a switch,
 				// so a standard alert's tile is never rewritten on account of this check.
-				if fn, ok := live["aggFn"]; err == nil && ok && fn != nil && pyfmt.Str(fn) != "count" {
+				if fn, ok := live.First()["aggFn"]; err == nil && ok && fn != nil && pyfmt.Str(fn) != "count" {
 					e.plan.where = true
 				}
 			}

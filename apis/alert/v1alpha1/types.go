@@ -50,6 +50,18 @@ type MetricRef struct {
 	Name string `json:"name"`
 }
 
+// Ratio makes a metric Alert compare a ratio instead of one aggregated value: the points its
+// Labels keep (the numerator) over the points these Labels keep (the denominator), both from the
+// same Metric, each aggregated by the Alert's aggregation over the interval.
+//
+// It exists for objectives stated as a share, such as "under 1% of API requests fail": the
+// numerator is the failing requests, the denominator all of them. An error COUNT is not the same
+// alert: at high traffic it fires on a healthy share, at low traffic it stays silent on a bad one.
+type Ratio struct {
+	// Labels keep the denominator's metric points, ANDed; empty keeps every point of the metric.
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
 // AlertSpec is what to alert on. The CRD (helm/alert-provider-crds) carries the schema.
 //
 // An Alert has one source: log rows (Where) or a metric (MetricRef), never both. Log rows are
@@ -76,6 +88,10 @@ type AlertSpec struct {
 	// Labels keep only the metric points whose attributes carry these values, e.g.
 	// {tenant: acme}. Metric alerts only.
 	Labels map[string]string `json:"labels,omitempty"`
+
+	// Ratio, when set, divides the aggregation of the points Labels keep by the aggregation of
+	// the points Ratio.Labels keep. Metric alerts with aggregation sum or increase only.
+	Ratio *Ratio `json:"ratio,omitempty"`
 
 	// Interval is the evaluation window.
 	Interval string `json:"interval,omitempty"`
