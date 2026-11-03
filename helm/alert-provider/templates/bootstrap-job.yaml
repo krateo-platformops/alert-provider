@@ -23,7 +23,6 @@ metadata:
   namespace: krateo-system
 spec:
   backoffLimit: 6            # HyperDX may still be booting when the installer fires this
-  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels: { app: hyperdx-key-bootstrap }
