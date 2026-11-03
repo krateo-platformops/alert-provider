@@ -102,6 +102,10 @@ type AlertSpec struct {
 	// ThresholdType is how the count is compared with the threshold.
 	ThresholdType string `json:"thresholdType,omitempty"`
 
+	// ThresholdMax is the upper bound of a range, required by thresholdType between and
+	// not_between (value in [threshold, thresholdMax], or outside it) and refused with any other.
+	ThresholdMax json.Number `json:"thresholdMax,omitempty"`
+
 	// Message is the notification message.
 	Message string `json:"message,omitempty"`
 }

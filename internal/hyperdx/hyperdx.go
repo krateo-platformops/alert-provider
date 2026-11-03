@@ -475,11 +475,13 @@ type AlertFields struct {
 	Interval      string
 	Threshold     any
 	ThresholdType string
-	Message       string
+	// ThresholdMax is the range's upper bound for between and not_between; nil otherwise.
+	ThresholdMax any
+	Message      string
 }
 
 // mutable are the alert fields a CR may change after creation.
-var mutable = []string{"interval", "threshold", "thresholdType", "message"}
+var mutable = []string{"interval", "threshold", "thresholdType", "thresholdMax", "message"}
 
 // alertBody is the alert document as both POST and PUT take it: PUT is a full replace validated
 // against the same schema as POST, so one builder keeps the two from drifting.
@@ -488,7 +490,7 @@ func alertBody(name, dashboardID, tileID, webhookID string, f AlertFields) map[s
 	if message == "" {
 		message = name + " threshold crossed — incident-agent will auto-triage."
 	}
-	return map[string]any{
+	b := map[string]any{
 		"name":          name,
 		"source":        "tile",
 		"dashboardId":   dashboardID,
@@ -499,6 +501,10 @@ func alertBody(name, dashboardID, tileID, webhookID string, f AlertFields) map[s
 		"channel":       map[string]any{"type": "webhook", "webhookId": webhookID},
 		"message":       message,
 	}
+	if f.ThresholdMax != nil {
+		b["thresholdMax"] = f.ThresholdMax
+	}
+	return b
 }
 
 // AlertDrift are the mutable fields and the name that differ between the live alert and the CR,

@@ -1,0 +1,103 @@
+# The data side of the ratio-alert proof: a plain ClickHouse, a plain MongoDB for HyperDX, and the
+# real OTel ClickHouse exporter (the collector version the CMP ships), which creates the otel_*
+# tables HyperDX's default sources read. Disposable: kind only.
+apiVersion: v1
+kind: Namespace
+metadata: {name: hdx-proof}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: clickhouse, namespace: hdx-proof}
+spec:
+  selector: {matchLabels: {app: clickhouse}}
+  template:
+    metadata: {labels: {app: clickhouse}}
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:26.8-alpine@sha256:f5443f9ffa48f0154cdd50cab39fed732201762574a27f04f1f564bbba81832d
+          env: [{name: CLICKHOUSE_SKIP_USER_SETUP, value: "1"}]
+          ports: [{containerPort: 8123}, {containerPort: 9000}]
+          readinessProbe: {httpGet: {path: /ping, port: 8123}, periodSeconds: 5}
+          volumeMounts: [{name: data, mountPath: /var/lib/clickhouse}]
+      volumes: [{name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: clickhouse, namespace: hdx-proof}
+spec:
+  selector: {app: clickhouse}
+  ports: [{name: http, port: 8123}, {name: native, port: 9000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: mongo, namespace: hdx-proof}
+spec:
+  selector: {matchLabels: {app: mongo}}
+  template:
+    metadata: {labels: {app: mongo}}
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7.0
+          ports: [{containerPort: 27017}]
+          readinessProbe: {tcpSocket: {port: 27017}, periodSeconds: 5}
+          volumeMounts: [{name: data, mountPath: /data/db}]
+      volumes: [{name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mongo, namespace: hdx-proof}
+spec:
+  selector: {app: mongo}
+  ports: [{name: mongo, port: 27017}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: collector, namespace: hdx-proof}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http: {endpoint: 0.0.0.0:4318}
+    processors:
+      batch: {timeout: 1s}
+    exporters:
+      clickhouse:
+        endpoint: tcp://clickhouse.hdx-proof.svc:9000
+        database: default
+        logs_table_name: otel_logs
+        traces_table_name: otel_traces
+        metrics_table_name: otel_metrics
+        create_schema: true
+        ttl: 24h
+        timeout: 10s
+    service:
+      pipelines:
+        logs: {receivers: [otlp], processors: [batch], exporters: [clickhouse]}
+        traces: {receivers: [otlp], processors: [batch], exporters: [clickhouse]}
+        metrics: {receivers: [otlp], processors: [batch], exporters: [clickhouse]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: otel-collector, namespace: hdx-proof}
+spec:
+  selector: {matchLabels: {app: otel-collector}}
+  template:
+    metadata: {labels: {app: otel-collector}}
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.158.0@sha256:c5918f78992ee73b0d6f0e599423ac5ec52dd5d9726733114d6eca53d5a32ed5
+          args: ["--config=/conf/config.yaml"]
+          ports: [{containerPort: 4318}]
+          volumeMounts: [{name: conf, mountPath: /conf}]
+      volumes: [{name: conf, configMap: {name: collector}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: otel-collector, namespace: hdx-proof}
+spec:
+  selector: {app: otel-collector}
+  ports: [{name: otlp-http, port: 4318}]

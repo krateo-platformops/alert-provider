@@ -57,6 +57,10 @@ spec:
                   message: "aggregation 'increase' is a counter metric's; it requires metricRef"
                 - rule: "!has(self.labels) || has(self.metricRef)"
                   message: "labels filter a metric's points; they require metricRef"
+                - rule: "has(self.thresholdMax) == (has(self.thresholdType) && self.thresholdType in ['between', 'not_between'])"
+                  message: "thresholdMax is the upper bound of a range: required with thresholdType between or not_between, and only valid with them"
+                - rule: "!has(self.thresholdMax) || double(self.thresholdMax) >= double(self.threshold)"
+                  message: "thresholdMax must be at least threshold: the range is [threshold, thresholdMax]"
                 - rule: "!has(self.ratio) || has(self.metricRef)"
                   message: "ratio divides two totals of a metric; it requires metricRef"
                 - rule: "!has(self.ratio) || (has(self.aggregation) && self.aggregation in ['sum', 'increase'])"
@@ -160,6 +164,16 @@ spec:
                   type: string
                   enum: [above, below, above_exclusive, below_or_equal, equal, not_equal, between, not_between]
                   default: above
+                  description: >
+                    How the value is compared with threshold (HyperDX's doesExceedThreshold): above
+                    is value >= threshold, above_exclusive >, below <, below_or_equal <=, equal ==,
+                    not_equal !=; between fires on threshold <= value <= thresholdMax, not_between
+                    outside that range.
+                thresholdMax:
+                  type: number
+                  description: >
+                    The upper bound of the range for thresholdType between and not_between
+                    (required with them, refused otherwise); at least threshold.
                 message:
                   type: string
                   description: Notification message (markdown).

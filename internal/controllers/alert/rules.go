@@ -121,7 +121,7 @@ func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Selec
 		return hyperdx.Select{}, "ratio.labels keep the same points as labels, so the ratio is always 1. " +
 			"labels select the numerator (e.g. the failing requests), ratio.labels the denominator (all of them)."
 	}
-	if why := IdleFires(threshold(spec), spec.ThresholdType); why != "" {
+	if why := IdleFires(threshold(spec), spec.ThresholdType, spec.ThresholdMax); why != "" {
 		return hyperdx.Select{}, why
 	}
 	d := sel
@@ -138,11 +138,12 @@ func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Selec
 // on a success share pages whenever nobody calls the service. Measured on HyperDX 2.35.0: a
 // 'below 1' ratio over a series with no rows went ALERT. The comparisons are HyperDX's
 // (doesExceedThreshold), evaluated at 0.
-func IdleFires(threshold any, thresholdType string) string {
+func IdleFires(threshold any, thresholdType string, thresholdMax any) string {
 	value, ok := pyfmt.Float(threshold)
 	if !ok {
 		return ""
 	}
+	upper, hasUpper := pyfmt.Float(thresholdMax)
 	kind := strings.ToLower(thresholdType)
 	if kind == "" {
 		kind = "above"
@@ -161,6 +162,10 @@ func IdleFires(threshold any, thresholdType string) string {
 		fires = value == 0
 	case "not_equal":
 		fires = value != 0
+	case "between":
+		fires = hasUpper && value <= 0 && 0 <= upper
+	case "not_between":
+		fires = hasUpper && (0 < value || 0 > upper)
 	default:
 		return ""
 	}

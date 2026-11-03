@@ -264,6 +264,9 @@ func fields(home string, a *v1alpha1.Alert) hyperdx.AlertFields {
 	spec := a.Spec
 	f := hyperdx.AlertFields{Interval: spec.Interval, Threshold: threshold(spec),
 		ThresholdType: spec.ThresholdType, Message: spec.Message}
+	if spec.ThresholdMax != "" {
+		f.ThresholdMax = spec.ThresholdMax
+	}
 	if f.Message == "" && a.Namespace != home {
 		f.Message = hyperdxName(home, a) + " threshold crossed."
 	}
