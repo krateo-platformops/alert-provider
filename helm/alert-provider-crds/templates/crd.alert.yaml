@@ -57,6 +57,14 @@ spec:
                   message: "aggregation 'increase' is a counter metric's; it requires metricRef"
                 - rule: "!has(self.labels) || has(self.metricRef)"
                   message: "labels filter a metric's points; they require metricRef"
+                - rule: "has(self.thresholdMax) == (has(self.thresholdType) && self.thresholdType in ['between', 'not_between'])"
+                  message: "thresholdMax is the upper bound of a range: required with thresholdType between or not_between, and only valid with them"
+                - rule: "!has(self.thresholdMax) || double(self.thresholdMax) >= double(self.threshold)"
+                  message: "thresholdMax must be at least threshold: the range is [threshold, thresholdMax]"
+                - rule: "!has(self.ratio) || has(self.metricRef)"
+                  message: "ratio divides two totals of a metric; it requires metricRef"
+                - rule: "!has(self.ratio) || (has(self.aggregation) && self.aggregation in ['sum', 'increase'])"
+                  message: "ratio divides two totals: aggregation must be sum or increase"
               properties:
                 displayName:
                   type: string
@@ -113,7 +121,29 @@ spec:
                       message: "label keys are attribute names: letters, digits, '_', '.', '-', '/'"
                   description: >
                     Keep only the metric points whose attributes carry these values, e.g.
-                    {tenant: acme}; ANDed together. Metric alerts only.
+                    {tenant: acme}; ANDed together. Metric alerts only. With ratio, these select
+                    the numerator.
+                ratio:
+                  type: object
+                  description: >
+                    Compare a share instead of one total: the aggregation of the points labels
+                    keep (the numerator) divided by the aggregation of the points ratio.labels
+                    keep (the denominator), both from the metric, over the interval. E.g. the
+                    failing share of API requests: labels {krateo.sli.error: "true"},
+                    ratio.labels {service.name: snowplow}, threshold 0.01 above. HyperDX evaluates
+                    a window with no traffic as 0, so a ratio whose condition holds at 0 (e.g. a
+                    success share 'below 0.99') would fire whenever the service is idle; such an
+                    Alert is refused (phase Invalid). Metric alerts with aggregation sum or
+                    increase only.
+                  properties:
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      x-kubernetes-validations:
+                        - rule: "self.all(k, k.matches('^[A-Za-z0-9_./-]+$'))"
+                          message: "label keys are attribute names: letters, digits, '_', '.', '-', '/'"
+                      description: The denominator's points, ANDed; empty keeps every point of the metric.
                 interval:
                   type: string
                   enum: ["1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d"]
@@ -134,6 +164,16 @@ spec:
                   type: string
                   enum: [above, below, above_exclusive, below_or_equal, equal, not_equal, between, not_between]
                   default: above
+                  description: >
+                    How the value is compared with threshold (HyperDX's doesExceedThreshold): above
+                    is value >= threshold, above_exclusive >, below <, below_or_equal <=, equal ==,
+                    not_equal !=; between fires on threshold <= value <= thresholdMax, not_between
+                    outside that range.
+                thresholdMax:
+                  type: number
+                  description: >
+                    The upper bound of the range for thresholdType between and not_between
+                    (required with them, refused otherwise); at least threshold.
                 message:
                   type: string
                   description: Notification message (markdown).

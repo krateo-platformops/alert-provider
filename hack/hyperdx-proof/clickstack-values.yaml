@@ -1,0 +1,18 @@
+# HyperDX 2.35.0 (ClickStack 3.2.0, as krateo-observability ships it) over the plain ClickHouse
+# and MongoDB of stack.yaml: the chart's own ClickHouse/MongoDB/collector need operators, which
+# this proof does not exercise. Test values only, on a disposable kind cluster.
+mongodb: {enabled: false}
+clickhouse: {enabled: false}
+otel-collector: {enabled: false}
+hyperdx:
+  config:
+    MONGO_URI: "mongodb://mongo.hdx-proof.svc:27017/hyperdx"
+    CLICKHOUSE_ENDPOINT: "tcp://clickhouse.hdx-proof.svc:9000?dial_timeout=10s"
+    CLICKHOUSE_SERVER_ENDPOINT: "clickhouse.hdx-proof.svc:9000"
+    CLICKHOUSE_PROMETHEUS_METRICS_ENDPOINT: "clickhouse.hdx-proof.svc:9363"
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.hdx-proof.svc:4318"
+    USAGE_STATS_ENABLED: "false"
+  deployment:
+    defaultConnections: |
+      [{"name": "Local ClickHouse", "host": "http://clickhouse.hdx-proof.svc:8123", "port": 8123,
+        "username": "default", "password": ""}]

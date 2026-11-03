@@ -160,6 +160,9 @@ type Select struct {
 	ValueExpression string
 	// Level is the quantile level when AggFn is "quantile".
 	Level float64
+	// Ratio, when set, is the denominator: the tile carries both select items with asRatio, and
+	// HyperDX evaluates this select divided by Ratio (renderChartConfig: divide(a, b)).
+	Ratio *Select
 }
 
 // CountSelect counts the log rows matching where.
@@ -183,16 +186,44 @@ func (s Select) item() map[string]any {
 	return m
 }
 
-// SelectDrift says whether a live tile's select item and source differ from what sel and source
-// would write. Only the keys sel writes are compared, as strings, so a field HyperDX adds to its
-// answer is never a drift.
-func SelectDrift(live map[string]any, liveSourceID string, source map[string]any, sel Select) bool {
+// items are the tile's select items: sel's, then its denominator's when it is a ratio.
+func (s Select) items() []map[string]any {
+	if s.Ratio == nil {
+		return []map[string]any{s.item()}
+	}
+	return []map[string]any{s.item(), s.Ratio.item()}
+}
+
+// LiveTile is what a live tile evaluates: its select items in order and whether it divides them.
+type LiveTile struct {
+	Selects []map[string]any
+	AsRatio bool
+}
+
+// First is the live tile's first select item, empty when it has none.
+func (l LiveTile) First() map[string]any {
+	if len(l.Selects) == 0 {
+		return map[string]any{}
+	}
+	return l.Selects[0]
+}
+
+// SelectDrift says whether a live tile's select items, asRatio and source differ from what sel
+// and source would write. Only the keys sel writes are compared, as strings, so a field HyperDX
+// adds to its answer is never a drift; a different number of items, or a flipped asRatio, is.
+func SelectDrift(live LiveTile, liveSourceID string, source map[string]any, sel Select) bool {
 	if liveSourceID != ID(source) {
 		return true
 	}
-	for k, v := range sel.item() {
-		if pyfmt.Str(live[k]) != pyfmt.Str(v) {
-			return true
+	want := sel.items()
+	if len(live.Selects) != len(want) || live.AsRatio != (sel.Ratio != nil) {
+		return true
+	}
+	for i, item := range want {
+		for k, v := range item {
+			if pyfmt.Str(live.Selects[i][k]) != pyfmt.Str(v) {
+				return true
+			}
 		}
 	}
 	return false
@@ -306,18 +337,19 @@ func tileFor(name string, source map[string]any, sel Select, tileID string) map[
 		"config": map[string]any{
 			"displayType": "line",
 			"sourceId":    source["id"],
-			"asRatio":     false,
+			"asRatio":     sel.Ratio != nil,
 			"fillNulls":   true,
-			"select":      []any{sel.item()},
+			"select":      anys(sel.items()),
 		},
 	}
 }
 
-// TileSelect is the live tile's select item and source id, and false when the dashboard is gone.
-func (c *Client) TileSelect(ctx context.Context, dashboardID string) (map[string]any, string, bool, error) {
+// TileSelect is the live tile's select items and asRatio, and its source id; false when the
+// dashboard is gone.
+func (c *Client) TileSelect(ctx context.Context, dashboardID string) (LiveTile, string, bool, error) {
 	ds, err := c.ListDashboards(ctx)
 	if err != nil {
-		return nil, "", false, err
+		return LiveTile{}, "", false, err
 	}
 	for _, d := range ds {
 		if ID(d) != dashboardID {
@@ -325,17 +357,22 @@ func (c *Client) TileSelect(ctx context.Context, dashboardID string) (map[string
 		}
 		t := tiles(d)
 		if len(t) == 0 {
-			return nil, "", false, nil
+			return LiveTile{}, "", false, nil
 		}
 		cfg, _ := t[0]["config"].(map[string]any)
 		src, _ := cfg["sourceId"].(string)
-		sel := maps(cfg["select"])
-		if len(sel) == 0 {
-			return map[string]any{}, src, true, nil
-		}
-		return sel[0], src, true, nil
+		ratio, _ := cfg["asRatio"].(bool)
+		return LiveTile{Selects: maps(cfg["select"]), AsRatio: ratio}, src, true, nil
 	}
-	return nil, "", false, nil
+	return LiveTile{}, "", false, nil
+}
+
+func anys(ms []map[string]any) []any {
+	out := make([]any, len(ms))
+	for i, m := range ms {
+		out[i] = m
+	}
+	return out
 }
 
 func tiles(d map[string]any) []map[string]any {
@@ -438,11 +475,13 @@ type AlertFields struct {
 	Interval      string
 	Threshold     any
 	ThresholdType string
-	Message       string
+	// ThresholdMax is the range's upper bound for between and not_between; nil otherwise.
+	ThresholdMax any
+	Message      string
 }
 
 // mutable are the alert fields a CR may change after creation.
-var mutable = []string{"interval", "threshold", "thresholdType", "message"}
+var mutable = []string{"interval", "threshold", "thresholdType", "thresholdMax", "message"}
 
 // alertBody is the alert document as both POST and PUT take it: PUT is a full replace validated
 // against the same schema as POST, so one builder keeps the two from drifting.
@@ -451,7 +490,7 @@ func alertBody(name, dashboardID, tileID, webhookID string, f AlertFields) map[s
 	if message == "" {
 		message = name + " threshold crossed — incident-agent will auto-triage."
 	}
-	return map[string]any{
+	b := map[string]any{
 		"name":          name,
 		"source":        "tile",
 		"dashboardId":   dashboardID,
@@ -462,6 +501,10 @@ func alertBody(name, dashboardID, tileID, webhookID string, f AlertFields) map[s
 		"channel":       map[string]any{"type": "webhook", "webhookId": webhookID},
 		"message":       message,
 	}
+	if f.ThresholdMax != nil {
+		b["thresholdMax"] = f.ThresholdMax
+	}
+	return b
 }
 
 // AlertDrift are the mutable fields and the name that differ between the live alert and the CR,
