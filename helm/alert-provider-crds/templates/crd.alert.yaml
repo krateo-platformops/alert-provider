@@ -126,9 +126,11 @@ spec:
                     keep (the numerator) divided by the aggregation of the points ratio.labels
                     keep (the denominator), both from the metric, over the interval. E.g. the
                     failing share of API requests: labels {krateo.sli.error: "true"},
-                    ratio.labels {service.name: snowplow}, threshold 0.01. An empty window (no
-                    denominator points) has no value and does not fire. Metric alerts with
-                    aggregation sum or increase only.
+                    ratio.labels {service.name: snowplow}, threshold 0.01 above. HyperDX evaluates
+                    a window with no traffic as 0, so a ratio whose condition holds at 0 (e.g. a
+                    success share 'below 0.99') would fire whenever the service is idle; such an
+                    Alert is refused (phase Invalid). Metric alerts with aggregation sum or
+                    increase only.
                   properties:
                     labels:
                       type: object

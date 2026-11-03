@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -127,4 +128,38 @@ func TestARatioOfPercentilesIsRefusedAndNothingIsPushed(t *testing.T) {
 	h.pass(2)
 	eq(t, "phase", h.status(sloAlert).Phase, "Invalid")
 	eq(t, "nothing pushed", len(h.api.All("alerts")), 0)
+}
+
+// --- an idle window reads 0 in HyperDX: a ratio must not fire at 0 ---
+
+func TestARatioThatFiresAtZeroIsRefused(t *testing.T) {
+	for _, c := range []struct{ threshold, kind string }{
+		{"0.99", "below"}, {"0", "below_or_equal"}, {"0.5", "below_or_equal"}, {"0", "equal"},
+		{"0.5", "not_equal"}, {"0", "above"}, {"-0.1", "above_exclusive"}, {"0", ""},
+	} {
+		_, why := MetricSelect(v1alpha1.AlertSpec{Aggregation: "sum", Labels: failing, Ratio: &v1alpha1.Ratio{Labels: all},
+			Threshold: json.Number(c.threshold), ThresholdType: c.kind}, callsMetric)
+		if !strings.Contains(why, "no traffic as 0") {
+			t.Errorf("%s %s: want the idle refusal, got %q", c.kind, c.threshold, why)
+		}
+	}
+}
+
+func TestARatioThatStaysQuietAtZeroIsAccepted(t *testing.T) {
+	for _, c := range []struct{ threshold, kind string }{
+		{"0.01", "above"}, {"0", "above_exclusive"}, {"0.5", "equal"}, {"0", "not_equal"}, {"0", "below"}, {"-1", "below_or_equal"},
+	} {
+		if _, why := MetricSelect(v1alpha1.AlertSpec{Aggregation: "sum", Labels: failing, Ratio: &v1alpha1.Ratio{Labels: all},
+			Threshold: json.Number(c.threshold), ThresholdType: c.kind}, callsMetric); why != "" {
+			t.Errorf("%s %s: refused: %s", c.kind, c.threshold, why)
+		}
+	}
+}
+
+func TestIdleFiresIsForRatiosOnly(t *testing.T) {
+	// A plain metric alert keeps its own semantics: 'below 0.99' on a gauge is a real question.
+	if _, why := MetricSelect(v1alpha1.AlertSpec{Aggregation: "avg", Threshold: "0.99", ThresholdType: "below"},
+		v1alpha1.MetricSpec{MetricName: "x", Type: v1alpha1.MetricTypeGauge}); why != "" {
+		t.Fatalf("a non-ratio metric alert was refused: %s", why)
+	}
 }

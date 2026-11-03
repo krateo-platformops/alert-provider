@@ -121,10 +121,55 @@ func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Selec
 		return hyperdx.Select{}, "ratio.labels keep the same points as labels, so the ratio is always 1. " +
 			"labels select the numerator (e.g. the failing requests), ratio.labels the denominator (all of them)."
 	}
+	if why := IdleFires(threshold(spec), spec.ThresholdType); why != "" {
+		return hyperdx.Select{}, why
+	}
 	d := sel
 	d.Where = den
 	sel.Ratio = &d
 	return sel, ""
+}
+
+// IdleFires is why a ratio Alert would fire on every window with no traffic, or "" if it would not.
+//
+// HyperDX evaluates a window whose query returns no rows as the value 0 (checkAlerts: an empty
+// bucket is "zeroValueIsAlert = doesExceedThreshold(alert, 0)"), and a ratio over an idle service
+// returns no rows. So a ratio whose condition holds at 0 fires on every quiet window: 'below 0.99'
+// on a success share pages whenever nobody calls the service. Measured on HyperDX 2.35.0: a
+// 'below 1' ratio over a series with no rows went ALERT. The comparisons are HyperDX's
+// (doesExceedThreshold), evaluated at 0.
+func IdleFires(threshold any, thresholdType string) string {
+	value, ok := pyfmt.Float(threshold)
+	if !ok {
+		return ""
+	}
+	kind := strings.ToLower(thresholdType)
+	if kind == "" {
+		kind = "above"
+	}
+	var fires bool
+	switch kind {
+	case "above":
+		fires = 0 >= value
+	case "above_exclusive":
+		fires = 0 > value
+	case "below":
+		fires = 0 < value
+	case "below_or_equal":
+		fires = 0 <= value
+	case "equal":
+		fires = value == 0
+	case "not_equal":
+		fires = value != 0
+	default:
+		return ""
+	}
+	if !fires {
+		return ""
+	}
+	return fmt.Sprintf("a ratio with thresholdType '%s' %s holds at 0, and HyperDX evaluates a window with no traffic as 0, "+
+		"so this fires whenever the service is idle. Alert on the failing share instead: labels select the failures, "+
+		"thresholdType 'above' a positive threshold (e.g. above 0.01 rather than a success share below 0.99).", kind, pyfmt.Str(threshold))
 }
 
 // LabelsWhere is the SQL filter keeping the metric points whose attributes carry labels, keys in
