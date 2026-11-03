@@ -16,6 +16,10 @@
 # steady-state reconciles are a no-op. (A pre-upgrade Helm hook would also work but can't be used here:
 # the Job runs as the krateo-alert-provider SA — a main-phase resource a pre-install hook would
 # race on a fresh install.)
+#
+# No ttlSecondsAfterFinished: the composition tracks this Job as a managed child, and once a TTL
+# deletes it the composition (and the Installer above it) stays Ready=False for good. The finished
+# Job stays until the next release replaces it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -23,7 +27,6 @@ metadata:
   namespace: krateo-system
 spec:
   backoffLimit: 6            # HyperDX may still be booting when the installer fires this
-  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels: { app: hyperdx-key-bootstrap }
