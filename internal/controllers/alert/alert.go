@@ -216,6 +216,9 @@ type external struct {
 // refuse is the observation of an Alert refused with why: nothing is pushed, and Update writes the
 // refusal to the status, once.
 func (e *external) refuse(a *v1alpha1.Alert, why string) reconciler.ExternalObservation {
+	// Ready on every successful Observe (provider-runtime v1.8.0): a refused Alert is not
+	// evaluating anything, and says why, until its spec is fixed.
+	a.SetConditions(prv1.Unavailable().WithMessage(why))
 	if a.Status.Phase == v1alpha1.PhaseInvalid && a.Status.Error == why {
 		return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}
 	}
@@ -312,6 +315,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		return reconciler.ExternalObservation{}, errNotAlert
 	}
 	if meta.WasDeleted(a) {
+		a.SetConditions(prv1.Deleting())
 		return reconciler.ExternalObservation{ResourceExists: a.Status.HyperdxAlertID != "" || a.Status.HyperdxDashboardID != ""}, nil
 	}
 
@@ -368,6 +372,8 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 				e.plan.taken[t] = true
 			}
 		}
+		// Ready on every successful Observe (provider-runtime v1.8.0): Update creates it next.
+		a.SetConditions(prv1.Creating())
 		return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false, Diff: e.plan.String()}, nil
 	}
 
@@ -403,14 +409,16 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 			live, liveSrc, found, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 			if err != nil {
 				e.firings.start(a, e.source, st)
-				return reconciler.ExternalObservation{}, e.specDrift(a, err)
+				// Ready=Available above mirrors HyperDX's live state, read in this call; only the
+				// tile read failed, so it stands (provider-runtime v1.8.0).
+				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
 			}
 			e.plan.where = found && hyperdx.SelectDrift(live, liveSrc, e.tileSource, e.sel)
 		} else {
 			liveWhere, found, err := e.hdx.TileWhere(ctx, e.plan.dashboardID)
 			if err != nil {
 				e.firings.start(a, e.source, st)
-				return reconciler.ExternalObservation{}, e.specDrift(a, err)
+				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
 			}
 			e.plan.where = found && liveWhere != a.Spec.Where
 			// A tile that aggregated (an Alert switched back to counting) can hold the same
