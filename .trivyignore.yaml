@@ -1,0 +1,10 @@
+# Scoped Trivy exceptions: each names one finding and the files it applies to, never a whole repo.
+# Read by krateo-platformops/.github's security workflow (it passes this file to the filesystem scans).
+misconfigurations:
+  - id: KSV-0125
+    paths:
+      - hack/hyperdx-proof/stack.yaml
+    statement: >-
+      Kind-only test fixture for hack/hyperdx-proof. The OTel collector image has no source in a
+      registry this rule trusts (no Docker Official Image, no Azure/ECR/GCR mirror), and the CMP's own
+      collector on ghcr.io would trip the same rule. Every other finding in the file is fixed.
