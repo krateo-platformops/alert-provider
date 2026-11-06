@@ -120,9 +120,9 @@ spec:
                     - rule: "self.all(k, k.matches('^[A-Za-z0-9_./-]+$'))"
                       message: "label keys are attribute names: letters, digits, '_', '.', '-', '/'"
                   description: >
-                    Keep only the metric points whose attributes carry these values, e.g.
-                    {tenant: acme}; ANDed together. Metric alerts only. With ratio, these select
-                    the numerator.
+                    Keep only the metric points that carry these values, on the point or on its
+                    resource, e.g. {tenant: acme}; ANDed together. Metric alerts only. With ratio,
+                    these select the numerator.
                 ratio:
                   type: object
                   description: >

@@ -43,8 +43,8 @@ const (
 	AggregationIncrease = "increase"
 )
 
-// MetricRef names the Metric an Alert aggregates, in the Alert's namespace: the controller reads
-// only its own namespace.
+// MetricRef names the Metric an Alert aggregates. It carries only a name, resolved in the Alert's
+// own namespace, so it cannot reach another tenant's Metric.
 type MetricRef struct {
 	// Name of the Metric.
 	Name string `json:"name"`
@@ -85,8 +85,8 @@ type AlertSpec struct {
 	// alerts only.
 	Value string `json:"value,omitempty"`
 
-	// Labels keep only the metric points whose attributes carry these values, e.g.
-	// {tenant: acme}. Metric alerts only.
+	// Labels keep only the metric points that carry these values, on the point or on its
+	// resource, e.g. {tenant: acme}. Metric alerts only.
 	Labels map[string]string `json:"labels,omitempty"`
 
 	// Ratio, when set, divides the aggregation of the points Labels keep by the aggregation of

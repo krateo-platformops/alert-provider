@@ -75,10 +75,10 @@ func TestMetricSelectRefusesIncreaseOnAnythingButACounter(t *testing.T) {
 func TestLabelsWhereIsOrderedAndQuoted(t *testing.T) {
 	eq(t, "empty", LabelsWhere(nil), "")
 	eq(t, "ordered", LabelsWhere(map[string]string{"tenant": "acme", "env": "prod"}),
-		"Attributes['env'] = 'prod' AND Attributes['tenant'] = 'acme'")
+		"(Attributes['env'] = 'prod' OR ResourceAttributes['env'] = 'prod') AND (Attributes['tenant'] = 'acme' OR ResourceAttributes['tenant'] = 'acme')")
 	// A value can never close its literal and extend the filter.
 	eq(t, "quoted", LabelsWhere(map[string]string{"tenant": `a' OR 1=1 --\`}),
-		`Attributes['tenant'] = 'a\' OR 1=1 --\\'`)
+		`(Attributes['tenant'] = 'a\' OR 1=1 --\\' OR ResourceAttributes['tenant'] = 'a\' OR 1=1 --\\')`)
 }
 
 // --- a metric Alert is a metric tile on the metrics source ---
@@ -95,7 +95,7 @@ func TestAMetricAlertEvaluatesItsMetricOnTheMetricsSource(t *testing.T) {
 	eq(t, "source", tile["sourceId"], "src-m")
 	eq(t, "select", tile["select"], []any{map[string]any{
 		"aggFn": "increase", "metricName": costMetric.MetricName, "metricType": "sum",
-		"valueExpression": "Value", "where": "Attributes['tenant'] = 'acme'", "whereLanguage": "sql"}})
+		"valueExpression": "Value", "where": "(Attributes['tenant'] = 'acme' OR ResourceAttributes['tenant'] = 'acme')", "whereLanguage": "sql"}})
 	eq(t, "interval", live["interval"], "1d")
 	eq(t, "phase", h.status(budget).Phase, "Synced")
 
@@ -118,7 +118,7 @@ func TestAChangedAggregationIsPushedOntoTheTile(t *testing.T) {
 	live := h.byName()[budget]
 	sel := h.api.TileOf(live)["select"].([]any)[0].(map[string]any)
 	eq(t, "aggFn", sel["aggFn"], "max")
-	eq(t, "where", sel["where"], "Attributes['tenant'] = 'beta'")
+	eq(t, "where", sel["where"], "(Attributes['tenant'] = 'beta' OR ResourceAttributes['tenant'] = 'beta')")
 	eq(t, "same alert", h.status(budget).HyperdxAlertID, id)
 }
 
