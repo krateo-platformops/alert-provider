@@ -134,6 +134,15 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 - The alert returning to OK changes nothing. From `Open` on, the incident controller runs its
   scripts and moves it, or a human closes it.
 
+## Alerts a person analyses
+
+An Alert labelled `observability.krateo.io/analysis: human` is for records that must not reach a
+model, such as a token in telemetry. Its firing opens an incident as usual, with the label copied
+to it, but no comparison, no RCA and no reanalysis run, and its records are not read. The incident
+starts `Open`, with `status.error` saying why it has no scripts. The newest open incident takes
+every later firing without a write, until a person closes it. The next firing after that opens a
+new one, past the `Resolved` grace window. A person is the only reader of the matched row.
+
 ## Reanalysis
 
 A person asks for a new analysis of an `Open` or `Verifying` incident by setting

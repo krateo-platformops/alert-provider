@@ -42,7 +42,9 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) error {
 		if !ok {
 			return nil
 		}
-		if s, _ := state(incident); s != "Open" && s != "Verifying" {
+		labels, _ := metadata(incident)["labels"].(map[string]any)
+		human := labels[LabelAnalysis] == AnalysisHuman
+		if s, _ := state(incident); human || (s != "Open" && s != "Verifying") {
 			if err := w.dropRequest(ctx, ns, name); err != nil {
 				return err
 			}
