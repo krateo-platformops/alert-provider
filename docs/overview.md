@@ -166,7 +166,8 @@ already being analyzed, and a `Resolved` or `Closed` one is over.
 - The records are the alert's `where` rows over one `spec.interval`, from HyperDX's
   `/api/v2/charts/series` grouped by `compare.RowGroup`: a line per distinct record (a k8s
   event's object, reason and message; any other log's service and pod), with its
-  count, the 20 most frequent quoted. No row is no verdict: HyperDX's `ALERT` comes from its last
+  count, the 20 most frequent quoted, with anything shaped like a JWT redacted, as the collectors
+  do. No row is no verdict: HyperDX's `ALERT` comes from its last
   evaluation, and the window read later can have aged past every row.
 - The answer is `{"match": <incident number> | null, "reason": "…"}`: the newest incident whose
   root cause produces any of the records, or null for none. The prompt numbers the incidents

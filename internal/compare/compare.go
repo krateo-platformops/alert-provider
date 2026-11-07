@@ -105,13 +105,21 @@ func Comparable(incident map[string]any) bool {
 	return !pyfmt.Truthy(st["error"]) && pyfmt.Strip(report) != ""
 }
 
-// cut is Python's str(text or "").strip(), cut at limit characters with a marker.
+// jwt is the same pattern the collectors redact. A record that holds a token must not carry it to
+// the model: an alert that matches tokens quotes them on its second firing, the first comparison.
+var jwt = regexp.MustCompile(`eyJ[A-Za-z0-9._-]{20,}`)
+
+// Redacted is what a token reads as in a prompt.
+const Redacted = "[REDACTED JWT]"
+
+// cut is Python's str(text or "").strip() with tokens redacted, cut at limit characters with a
+// marker. Redacting first means the limit cannot leave part of a token behind.
 func cut(text any, limit int) string {
 	s := ""
 	if pyfmt.Truthy(text) {
 		s = pyfmt.Str(text)
 	}
-	s = pyfmt.Strip(s)
+	s = jwt.ReplaceAllString(pyfmt.Strip(s), Redacted)
 	if pyfmt.Len(s) <= limit {
 		return s
 	}
