@@ -1,12 +1,17 @@
 alert-provider {{ .Chart.AppVersion }} installed in {{ .Release.Namespace }}.
 
-Default alerts seeded into HyperDX (config.defaultAlerts) — each firing auto-launches an
-incident-agent root-cause analysis:
-  - krateo-composition-reconcile-error   (control-plane reconcile failures)
-  - krateo-platform-crashloop            (platform pods crash-looping)
-  - krateo-platform-image-pull-failure   (platform image pull failures)
+{{- with .Values.config.defaultAlerts }}
+Alerts seeded on start when absent (config.defaultAlerts) — each firing of an Alert in this
+namespace launches an incident-agent root-cause analysis:
+{{- range . }}
+  - {{ .name }}
+{{- end }}
+{{- else }}
+No alerts are seeded (config.defaultAlerts is empty): the platform's defaults ship in
+krateo-observability.
+{{- end }}
 
-Manage them as Alert CRs:
+Manage Alerts as CRs:
   kubectl -n {{ .Release.Namespace }} get alerts
 
 Alerts in any other namespace (a tenant's) are reconciled too, named <namespace>/<name> in HyperDX.
