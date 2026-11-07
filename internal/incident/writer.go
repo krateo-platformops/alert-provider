@@ -28,6 +28,11 @@ import (
 const (
 	// LabelAlert carries the Alert's metadata.name, so it is at most 63 characters.
 	LabelAlert = "observability.krateo.io/alert"
+	// LabelAnalysis on an Alert, copied to its incidents, says who analyses them. AnalysisHuman
+	// means a person: no comparison, no RCA and no reanalysis, so no model reads what the alert
+	// matched. For an alert whose records are the leak, such as a token in telemetry.
+	LabelAnalysis = "observability.krateo.io/analysis"
+	AnalysisHuman = "human"
 	// writeAttempts is how often a conditioned status write is retried on a 409.
 	writeAttempts = 5
 )
@@ -52,7 +57,12 @@ func IntervalSeconds(interval string) int {
 type Alert struct {
 	compare.Alert
 	Namespace string
+	// HumanAnalysis is the Alert's LabelAnalysis saying AnalysisHuman.
+	HumanAnalysis bool
 }
+
+// HumanOnly is status.error on an incident no model analyses: it says why it has no scripts.
+const HumanOnly = "This alert is analysed by a person: no model reads what it matched."
 
 // Records returns the alert's current records: the rows matching where over the last seconds.
 type Records func(ctx context.Context, where string, seconds int) ([]compare.Row, error)
@@ -275,6 +285,17 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 		}
 	}
 	sort.SliceStable(open, func(a, b int) bool { return less(sortKey(open[b]), sortKey(open[a])) })
+	if alert.HumanAnalysis {
+		// Nothing to compare, and its records must not reach a model: the newest open incident
+		// takes every firing until a person closes it.
+		if len(open) > 0 {
+			return open[0], nil
+		}
+		if latest := newest(items); latest != nil && resolvedWithin(latest, at, grace) {
+			return latest, nil
+		}
+		return nil, nil
+	}
 	var noVerdict error
 	var candidates []map[string]any
 	for _, i := range open {
@@ -391,9 +412,13 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		return nil, nil
 	}
 	name := IncidentName(alert.Name, at)
+	labels := map[string]any{LabelAlert: alert.Name}
+	if alert.HumanAnalysis {
+		labels[LabelAnalysis] = AnalysisHuman
+	}
 	created, err := w.kube.Create(ctx, map[string]any{
 		"apiVersion": IncidentGVK.GroupVersion().String(), "kind": IncidentGVK.Kind,
-		"metadata": map[string]any{"name": name, "namespace": ns, "labels": map[string]any{LabelAlert: alert.Name}},
+		"metadata": map[string]any{"name": name, "namespace": ns, "labels": labels},
 		"spec": map[string]any{"alertRef": map[string]any{"name": alert.Name, "namespace": ns}, "trigger": "alert",
 			"prompt": prompt, "triggeredAt": now}})
 	if err != nil {
@@ -406,8 +431,11 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 	}
 	// Unconditioned: the controller may already have touched the new object, and no other writer
 	// sets these fields yet.
-	if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{
-		"status": map[string]any{"state": "Analyzing"}}); err != nil {
+	first := map[string]any{"state": "Analyzing"}
+	if alert.HumanAnalysis {
+		first = map[string]any{"state": "Open", "error": HumanOnly, "completedAt": now}
+	}
+	if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{"status": first}); err != nil {
 		return nil, err
 	}
 	w.log.Info(fmt.Sprintf("[incident] %s/%s: opened", ns, name))
@@ -529,7 +557,7 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 		w.log.Info(fmt.Sprintf("[err] alert %s: firing not recorded (%s)", key, err))
 		return
 	}
-	if created != nil {
+	if created != nil && !alert.HumanAnalysis {
 		name := str(metadata(created), "name")
 		w.RunAnalysis(ctx, ns, name, prompt, name)
 	}

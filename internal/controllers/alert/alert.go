@@ -634,7 +634,7 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", hyperdxName(f.home, a)))
 		return
 	}
-	alert := incident.Alert{Namespace: a.Namespace, Alert: compare.Alert{
+	alert := incident.Alert{Namespace: a.Namespace, HumanAnalysis: a.Labels[incident.LabelAnalysis] == incident.AnalysisHuman, Alert: compare.Alert{
 		Name: a.Name, DisplayName: a.Spec.DisplayName, Where: a.Spec.Where, Interval: a.Spec.Interval,
 		Threshold: pyfmt.NumberStr(threshold(a.Spec)), ThresholdType: a.Spec.ThresholdType, Message: a.Spec.Message,
 	}}

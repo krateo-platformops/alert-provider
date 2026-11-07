@@ -537,6 +537,17 @@ func TestAFiringCarriesTheAlertsSpec(t *testing.T) {
 	eq(t, "alert", got, incident.Alert{Namespace: ns, Alert: compareAlert(k, "where-k")})
 }
 
+func TestAFiringCarriesTheHumanAnalysisLabel(t *testing.T) {
+	h := newHarness(t, alertCR(k, "where-k", v1alpha1.AlertStatus{}))
+	h.edit(k, func(a *v1alpha1.Alert) { a.Labels = map[string]string{incident.LabelAnalysis: incident.AnalysisHuman} })
+	var got incident.Alert
+	h.conn.firings.fire = func(_ context.Context, a incident.Alert, _ incident.Records) { got = a }
+	h.pass(1)
+	h.api.Set("alerts", h.status(k).HyperdxAlertID, map[string]any{"state": "ALERT"})
+	h.pass(1)
+	eq(t, "human analysis", got.HumanAnalysis, true)
+}
+
 // --- the webhook, deletion ---
 
 func TestARecreatedWebhookRebuildsEveryAlertOnIt(t *testing.T) {
