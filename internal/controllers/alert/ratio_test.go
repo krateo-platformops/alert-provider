@@ -36,9 +36,9 @@ func TestMetricSelectBuildsTheDenominator(t *testing.T) {
 		t.Fatalf("refused: %s", why)
 	}
 	num := hyperdx.Select{AggFn: "sum", MetricName: callsMetric.MetricName, MetricType: "sum",
-		Where: "Attributes['krateo.sli.error'] = 'true' AND Attributes['service.name'] = 'snowplow'"}
+		Where: "(Attributes['krateo.sli.error'] = 'true' OR ResourceAttributes['krateo.sli.error'] = 'true') AND (Attributes['service.name'] = 'snowplow' OR ResourceAttributes['service.name'] = 'snowplow')"}
 	den := num
-	den.Where = "Attributes['service.name'] = 'snowplow'"
+	den.Where = "(Attributes['service.name'] = 'snowplow' OR ResourceAttributes['service.name'] = 'snowplow')"
 	num.Ratio = &den
 	eq(t, "select", sel, num)
 }
@@ -82,9 +82,9 @@ func TestARatioAlertCarriesBothSelectsAsARatio(t *testing.T) {
 	eq(t, "asRatio", tile["asRatio"], true)
 	eq(t, "select", tile["select"], []any{
 		map[string]any{"aggFn": "sum", "metricName": callsMetric.MetricName, "metricType": "sum", "valueExpression": "Value",
-			"where": "Attributes['krateo.sli.error'] = 'true' AND Attributes['service.name'] = 'snowplow'", "whereLanguage": "sql"},
+			"where": "(Attributes['krateo.sli.error'] = 'true' OR ResourceAttributes['krateo.sli.error'] = 'true') AND (Attributes['service.name'] = 'snowplow' OR ResourceAttributes['service.name'] = 'snowplow')", "whereLanguage": "sql"},
 		map[string]any{"aggFn": "sum", "metricName": callsMetric.MetricName, "metricType": "sum", "valueExpression": "Value",
-			"where": "Attributes['service.name'] = 'snowplow'", "whereLanguage": "sql"},
+			"where": "(Attributes['service.name'] = 'snowplow' OR ResourceAttributes['service.name'] = 'snowplow')", "whereLanguage": "sql"},
 	})
 	eq(t, "threshold", live["threshold"], 0.01)
 	eq(t, "phase", h.status(sloAlert).Phase, "Synced")

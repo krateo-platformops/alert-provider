@@ -177,9 +177,11 @@ func IdleFires(threshold any, thresholdType string, thresholdMax any) string {
 		"thresholdType 'above' a positive threshold (e.g. above 0.01 rather than a success share below 0.99).", kind, pyfmt.Str(threshold))
 }
 
-// LabelsWhere is the SQL filter keeping the metric points whose attributes carry labels, keys in
-// order so the same labels always render the same filter (a reordered filter would be a drift
-// pushed on every pass). Empty labels keep every point.
+// LabelsWhere is the SQL filter keeping the metric points that carry labels, on the point or on its
+// resource: kubeletstats puts every identity on the resource and leaves the point empty, so a
+// filter on the point alone matches nothing, and a 'below' alert then fires on the empty window.
+// Keys are in order so the same labels always render the same filter (a reordered filter would be
+// a drift pushed on every pass). Empty labels keep every point.
 func LabelsWhere(labels map[string]string) string {
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
@@ -188,7 +190,8 @@ func LabelsWhere(labels map[string]string) string {
 	sort.Strings(keys)
 	terms := make([]string, 0, len(keys))
 	for _, k := range keys {
-		terms = append(terms, fmt.Sprintf("Attributes[%s] = %s", sqlString(k), sqlString(labels[k])))
+		key, value := sqlString(k), sqlString(labels[k])
+		terms = append(terms, fmt.Sprintf("(Attributes[%s] = %s OR ResourceAttributes[%s] = %s)", key, value, key, value))
 	}
 	return strings.Join(terms, " AND ")
 }
