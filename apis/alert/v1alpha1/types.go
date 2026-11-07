@@ -43,6 +43,14 @@ const (
 	AggregationIncrease = "increase"
 )
 
+// Sources of an Alert's rows (spec.source): what its where, and its value, read.
+const (
+	// SourceLogs is the HyperDX logs source; an Alert without a source reads it.
+	SourceLogs = "logs"
+	// SourceTraces is the HyperDX traces source: one row per span.
+	SourceTraces = "traces"
+)
+
 // MetricRef names the Metric an Alert aggregates. It carries only a name, resolved in the Alert's
 // own namespace, so it cannot reach another tenant's Metric.
 type MetricRef struct {
@@ -64,13 +72,17 @@ type Ratio struct {
 
 // AlertSpec is what to alert on. The CRD (helm/alert-provider-crds) carries the schema.
 //
-// An Alert has one source: log rows (Where) or a metric (MetricRef), never both. Log rows are
-// counted, or, with Value and Aggregation, a value read from each row is aggregated.
+// An Alert reads rows (Where, over the logs or the traces source) or a metric (MetricRef), never
+// both. Rows are counted, or, with Value and Aggregation, a value read from each row is aggregated.
 type AlertSpec struct {
 	// DisplayName is shown in the portal and in the RCA prompt; metadata.name when empty.
 	DisplayName string `json:"displayName,omitempty"`
 
-	// Where is the ClickHouse SQL boolean expression over the logs source the alert counts.
+	// Source is which rows Where and Value read: SourceLogs (when empty) or SourceTraces. Row
+	// alerts only.
+	Source string `json:"source,omitempty"`
+
+	// Where is the ClickHouse SQL boolean expression over the rows of Source the alert counts.
 	Where string `json:"where,omitempty"`
 
 	// MetricRef is the Metric the alert aggregates, instead of counting log rows.
@@ -157,6 +169,14 @@ var (
 // IsMetric says the Alert aggregates a metric rather than reading log rows.
 func (mg *Alert) IsMetric() bool {
 	return mg.Spec.MetricRef != nil
+}
+
+// RowSource is the source the Alert's rows are read from: spec.source, SourceLogs when empty.
+func (mg *Alert) RowSource() string {
+	if mg.Spec.Source == "" {
+		return SourceLogs
+	}
+	return mg.Spec.Source
 }
 
 // Aggregated says the Alert compares an aggregated value (a metric, or a value read from log

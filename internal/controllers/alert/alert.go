@@ -147,7 +147,7 @@ type connector struct {
 }
 
 // Connect opens a pass: a new HyperDX client, so the pass reads the dashboards afresh, and the
-// HyperDX source and shared webhook every alert uses.
+// HyperDX sources and shared webhook every alert uses.
 func (c *connector) Connect(ctx context.Context, mg resource.Managed) (reconciler.ExternalClient, error) {
 	a, ok := mg.(*v1alpha1.Alert)
 	if !ok {
@@ -157,11 +157,11 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (reconcile
 	if meta.WasDeleted(a) {
 		return e, nil // removing the HyperDX objects needs neither
 	}
-	source, webhookID, err := c.webhook.ensure(ctx, e.hdx, a)
+	sources, webhookID, err := c.webhook.ensure(ctx, e.hdx, a)
 	if err != nil {
 		return nil, err
 	}
-	e.source, e.webhookID = source, webhookID
+	e.sources, e.webhookID = sources, webhookID
 	return e, nil
 }
 
@@ -204,13 +204,29 @@ type external struct {
 	hdx       *hyperdx.Client
 	firings   *firings
 	log       logging.Logger
-	source    map[string]any // the logs source
+	sources   []map[string]any // HyperDX's, every kind
 	webhookID string
 	plan      plan
+	// rows is the source a row Alert reads (its logs or traces source, see rowSource); nil for a
+	// metric Alert. Its firings read their records from it.
+	rows map[string]any
 	// sel and tileSource are what the Alert's tile aggregates and over which source: the count of
-	// its `where` rows over the logs source, or its metric over the metrics source.
+	// its `where` rows (or a value read from them) over rows, or its metric over the metrics source.
 	sel        hyperdx.Select
 	tileSource map[string]any
+}
+
+// sourceKinds are the HyperDX source kinds spec.source names.
+var sourceKinds = map[string]string{v1alpha1.SourceLogs: hyperdx.KindLog, v1alpha1.SourceTraces: hyperdx.KindTrace}
+
+// rowSource is the HyperDX source of the Alert's rows: the one of the kind spec.source names. A
+// source the install lacks is an error, not a refusal: the spec is valid, the install is not.
+func (e *external) rowSource(a *v1alpha1.Alert) (map[string]any, error) {
+	kind, ok := sourceKinds[a.RowSource()]
+	if !ok { // the CRD's enum admits no other value
+		return nil, fmt.Errorf("spec.source %q: not logs or traces", a.Spec.Source)
+	}
+	return hyperdx.OfKind(e.sources, kind)
 }
 
 // refuse is the observation of an Alert refused with why: nothing is pushed, and Update writes the
@@ -226,19 +242,23 @@ func (e *external) refuse(a *v1alpha1.Alert, why string) reconciler.ExternalObse
 	return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false, Diff: "refused: " + why}
 }
 
-// tile resolves what the Alert's tile aggregates. A metric Alert reads its Metric and the metrics
-// source; a missing Metric, or one its aggregation cannot apply to, is why it is refused.
+// tile resolves what the Alert's tile aggregates. A row Alert reads the source spec.source names;
+// a metric Alert reads its Metric and the metrics source. A missing Metric, or one its aggregation
+// cannot apply to, is why it is refused.
 func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) {
 	if !a.IsMetric() {
-		if !a.Aggregated() {
-			e.sel, e.tileSource = hyperdx.CountSelect(a.Spec.Where), e.source
-			return "", nil
+		rows, err := e.rowSource(a)
+		if err != nil {
+			return "", err
 		}
-		sel, why := ValueSelect(a.Spec)
-		if why != "" {
-			return why, nil
+		sel := hyperdx.CountSelect(a.Spec.Where)
+		if a.Aggregated() {
+			var why string
+			if sel, why = ValueSelect(a.Spec); why != "" {
+				return why, nil
+			}
 		}
-		e.sel, e.tileSource = sel, e.source
+		e.rows, e.sel, e.tileSource = rows, sel, rows
 		return "", nil
 	}
 	ref, ns := a.Spec.MetricRef, a.Namespace
@@ -408,7 +428,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		if a.Aggregated() {
 			live, liveSrc, found, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 			if err != nil {
-				e.firings.start(a, e.source, st)
+				e.firings.start(a, e.rows, st)
 				// Ready=Available above mirrors HyperDX's live state, read in this call; only the
 				// tile read failed, so it stands (provider-runtime v1.8.0).
 				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
@@ -417,17 +437,21 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		} else {
 			liveWhere, found, err := e.hdx.TileWhere(ctx, e.plan.dashboardID)
 			if err != nil {
-				e.firings.start(a, e.source, st)
+				e.firings.start(a, e.rows, st)
 				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
 			}
 			e.plan.where = found && liveWhere != a.Spec.Where
-			// A tile that aggregated (an Alert switched back to counting) can hold the same
-			// `where`: it is rewritten whole.
+			// A tile that aggregated (an Alert switched back to counting), or that reads the other
+			// source (an Alert switched between logs and traces), can hold the same `where`: it is
+			// rewritten whole.
 			if found && !e.plan.where {
-				live, _, _, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
+				live, liveSrc, _, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 				// A tile with no aggFn is a count: only an explicit other function is a switch,
 				// so a standard alert's tile is never rewritten on account of this check.
 				if fn, ok := live.First()["aggFn"]; err == nil && ok && fn != nil && pyfmt.Str(fn) != "count" {
+					e.plan.where = true
+				}
+				if err == nil && liveSrc != hyperdx.ID(e.tileSource) {
 					e.plan.where = true
 				}
 			}
@@ -435,7 +459,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 	e.plan.drift = hyperdx.AlertDrift(alert, hyperdxName(e.home, a), fields(e.home, a))
 
-	e.firings.start(a, e.source, st)
+	e.firings.start(a, e.rows, st)
 	if e.plan.deleteShared != "" || e.plan.where || len(e.plan.drift) > 0 {
 		return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false, Diff: e.plan.String()}, nil
 	}
@@ -532,7 +556,7 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	a.Status.State, a.Status.Phase = st, v1alpha1.PhaseSynced
 	a.SetConditions(prv1.Available())
 	e.log.Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", hyperdxName(e.home, a), a.Status.HyperdxAlertID, st))
-	e.firings.start(a, e.source, st)
+	e.firings.start(a, e.rows, st)
 	return nil
 }
 
@@ -602,8 +626,8 @@ type firings struct {
 }
 
 // fire starts the incident writer on a firing, off the reconcile: a comparison takes seconds, a
-// new incident's RCA minutes. Its records are the alert's `where` rows in source, one line per
-// distinct record.
+// new incident's RCA minutes. Its records are the alert's `where` rows in source (its logs or its
+// traces), one line per distinct record.
 func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) {
 	if state != "ALERT" {
 		return
@@ -626,7 +650,8 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is outside %s; no incident (only %s Alerts are root-caused)", hyperdxName(f.home, a), f.home, f.home))
 		return
 	}
-	// The incident writer compares and root-causes the LOG RECORDS an alert counts. A metric has
+	// The incident writer compares and root-causes the RECORDS (log records or spans) an alert
+	// counts. A metric has
 	// none, and an aggregated value is not a count (the prompt would describe the wrong
 	// threshold), so an aggregated firing is the ALERT state mirrored on the Alert, and HyperDX's
 	// notification through the webhook.
@@ -637,10 +662,11 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 	alert := incident.Alert{Namespace: a.Namespace, HumanAnalysis: a.Labels[incident.LabelAnalysis] == incident.AnalysisHuman, Alert: compare.Alert{
 		Name: a.Name, DisplayName: a.Spec.DisplayName, Where: a.Spec.Where, Interval: a.Spec.Interval,
 		Threshold: pyfmt.NumberStr(threshold(a.Spec)), ThresholdType: a.Spec.ThresholdType, Message: a.Spec.Message,
+		Source: a.Spec.Source,
 	}}
-	hdx, sourceID := f.hdx(), hyperdx.ID(source)
+	hdx, sourceID, group := f.hdx(), hyperdx.ID(source), compare.GroupOf(a.Spec.Source)
 	records := func(ctx context.Context, where string, seconds int) ([]compare.Row, error) {
-		return hdx.RecordCounts(ctx, sourceID, where, seconds, compare.RowGroup)
+		return hdx.RecordCounts(ctx, sourceID, where, seconds, group)
 	}
 	f.run(func() { f.fire(f.ctx, alert, records) })
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
+	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
 )
@@ -13,10 +14,15 @@ import (
 // BuildPrompt is the RCA prompt. The user message carries the incident; the agent's system prompt
 // carries the method. The method therefore lives in one place, so the A2A URL must point at an
 // agent whose prompt carries it (incident-agent does; a bare generalist does not).
-func BuildPrompt(alertName, alertState, where, message string) string {
+//
+// source is the Alert's spec.source: the rows where reads, log records unless it is traces.
+func BuildPrompt(alertName, alertState, where, message, source string) string {
 	scope := ""
 	if where != "" {
-		scope = "\n\nIt fired on log records matching `" + where + "`"
+		scope = "\n\nIt fired on " + compare.Records(source) + " matching `" + where + "`"
+		if source == compare.Traces {
+			scope += " in the traces source (otel_traces)"
+		}
 		if message != "" {
 			scope += " — intent: " + message
 		}
