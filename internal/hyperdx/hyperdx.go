@@ -118,44 +118,54 @@ func ID(m map[string]any) string {
 	return s
 }
 
-// FirstSource is the first HyperDX source: the logs the alerts count.
-func (c *Client) FirstSource(ctx context.Context) (map[string]any, error) {
+// Kinds of HyperDX source, as /api/v2/sources names them.
+const (
+	KindLog    = "log"
+	KindTrace  = "trace"
+	KindMetric = "metric"
+)
+
+// Sources are the HyperDX sources: one of each kind on a ClickStack install (logs, traces,
+// metrics, sessions), in the order HyperDX lists them.
+func (c *Client) Sources(ctx context.Context) ([]map[string]any, error) {
 	v, err := c.req(ctx, http.MethodGet, "/api/v2/sources", nil)
 	if err != nil {
 		return nil, err
 	}
-	srcs := maps(v)
-	if len(srcs) == 0 {
-		return nil, fmt.Errorf("no HyperDX sources configured")
+	return maps(v), nil
+}
+
+// OfKind is the first of srcs whose kind is kind, or an error naming the missing kind. A source is
+// chosen by kind, never by position: the first source is a log source only by install order.
+func OfKind(srcs []map[string]any, kind string) (map[string]any, error) {
+	for _, s := range srcs {
+		if s["kind"] == kind {
+			return s, nil
+		}
 	}
-	return srcs[0], nil
+	return nil, fmt.Errorf("no HyperDX %s source configured", kind)
 }
 
 // MetricSource is the first HyperDX source of kind "metric": the metrics a metric alert
 // aggregates.
 func (c *Client) MetricSource(ctx context.Context) (map[string]any, error) {
-	v, err := c.req(ctx, http.MethodGet, "/api/v2/sources", nil)
+	srcs, err := c.Sources(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, s := range maps(v) {
-		if s["kind"] == "metric" {
-			return s, nil
-		}
-	}
-	return nil, fmt.Errorf("no HyperDX metric source configured")
+	return OfKind(srcs, KindMetric)
 }
 
-// Select is what a tile aggregates: the count of log rows matching Where, or a metric. It is the
-// tile's single select item.
+// Select is what a tile aggregates: the count of the rows (log records or spans) matching Where,
+// a value read from them, or a metric. It is the tile's single select item.
 type Select struct {
-	// AggFn is HyperDX's aggregate function: "count" for a log alert.
+	// AggFn is HyperDX's aggregate function: "count" for a counting alert.
 	AggFn string
 	// Where is the SQL filter applied before aggregating.
 	Where string
-	// MetricName and MetricType name the metric; empty for a log alert.
+	// MetricName and MetricType name the metric; empty for a row alert.
 	MetricName, MetricType string
-	// ValueExpression is what a log alert aggregates from each row; empty when it counts rows.
+	// ValueExpression is what a row alert aggregates from each row; empty when it counts rows.
 	// A metric is always aggregated over its Value column.
 	ValueExpression string
 	// Level is the quantile level when AggFn is "quantile".
@@ -165,7 +175,7 @@ type Select struct {
 	Ratio *Select
 }
 
-// CountSelect counts the log rows matching where.
+// CountSelect counts the rows matching where.
 func CountSelect(where string) Select {
 	return Select{AggFn: "count", Where: where}
 }

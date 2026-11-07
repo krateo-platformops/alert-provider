@@ -27,7 +27,7 @@ portal — it *calls* an agent, it is not one.
 Each `Alert` is a provider-runtime managed resource whose external resource is its HyperDX alert
 and dashboard. A reconcile is one pass, every `config.reconcileInterval`:
 
-- Connect reads the HyperDX source and ensures the shared webhook, at most once per interval for
+- Connect reads the HyperDX sources and ensures the shared webhook, at most once per interval for
   all Alerts. A recreated webhook resets every Alert, which rebuilds its HyperDX alert on it.
 - Observe finds the HyperDX alert by `status.hyperdxAlertId`, else by name, mirrors its state and
   plans the push. It never reports the alert missing: provider-runtime's create handshake would
@@ -43,6 +43,25 @@ and dashboard. A reconcile is one pass, every `config.reconcileInterval`:
 - `status.conditions` carries provider-runtime's `Ready` and `Synced`; `status.phase` keeps its
   meaning. The controller emits no warning Events: the seeded reconcile-error alert counts
   `CannotObserveExternalResource` Events, and a HyperDX outage would make it fire on itself.
+
+## Alert sources
+
+An Alert reads rows or a metric. A row Alert's `where` (and `value`) read the source
+`spec.source` names: `logs`, the default when it is omitted, or `traces`, one row per span
+(`ServiceName`, `SpanName`, `StatusCode`, `StatusMessage`, `Duration` in nanoseconds,
+`SpanAttributes`). A traces Alert counts the spans `where` matches, e.g. `ServiceName =
+'snowplow' AND StatusCode = 'Error'`, or aggregates a value read from them, e.g. the p95 of
+`Duration / 1e6` in milliseconds. A metric Alert (`metricRef`) reads the metrics source.
+
+- Each source is picked by its HyperDX kind (`log`, `trace`, `metric`), never by its position in
+  HyperDX's list.
+- Admission refuses `source` with `metricRef` (and so with `labels` and `ratio`, which need
+  `metricRef`), and a traces Alert with an empty `where`: counting every span measures traffic,
+  not a fault.
+- An install without a traces source fails a traces Alert's pass with phase `Error`: the spec is
+  valid, the install cannot evaluate it.
+- Changing `source` with the same `where` rewrites the dashboard tile in place and keeps the
+  HyperDX alert.
 
 ## Alert identity
 
@@ -174,7 +193,8 @@ already being analyzed, and a `Resolved` or `Closed` one is over.
   precondition, apply and verify scripts.
 - The records are the alert's `where` rows over one `spec.interval`, from HyperDX's
   `/api/v2/charts/series` grouped by `compare.RowGroup`: a line per distinct record (a k8s
-  event's object, reason and message; any other log's service and pod), with its
+  event's object, reason and message; any other log's service and pod), or for a traces Alert by
+  `compare.TraceRowGroup` (a span's service, namespace, name, status and status message), with its
   count, the 20 most frequent quoted, with anything shaped like a JWT redacted, as the collectors
   do. No row is no verdict: HyperDX's `ALERT` comes from its last
   evaluation, and the window read later can have aged past every row.

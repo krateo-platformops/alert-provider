@@ -16,7 +16,7 @@ func TestBuildPromptMatchesPython(t *testing.T) {
 			v, _ := args[i].(string)
 			return v
 		}
-		if got := BuildPrompt(s(0), s(1), s(2), s(3)); got != c["prompt"] {
+		if got := BuildPrompt(s(0), s(1), s(2), s(3), ""); got != c["prompt"] {
 			t.Errorf("case %d %v:\n got %q\nwant %q", i, args, got, c["prompt"])
 		}
 	}

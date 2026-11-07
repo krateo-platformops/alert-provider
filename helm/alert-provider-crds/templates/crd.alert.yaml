@@ -65,6 +65,10 @@ spec:
                   message: "ratio divides two totals of a metric; it requires metricRef"
                 - rule: "!has(self.ratio) || (has(self.aggregation) && self.aggregation in ['sum', 'increase'])"
                   message: "ratio divides two totals: aggregation must be sum or increase"
+                - rule: "!has(self.source) || !has(self.metricRef)"
+                  message: "source names the rows where reads (logs or traces); a metric alert (metricRef) reads its metric"
+                - rule: "!has(self.source) || self.source != 'traces' || self.where != ''"
+                  message: "a traces alert needs a where: counting every span measures traffic, not a fault"
               properties:
                 displayName:
                   type: string
@@ -72,17 +76,27 @@ spec:
                     Human-readable name, shown in the portal and in the RCA prompt (defaults to
                     metadata.name). It need not be unique: the HyperDX alert is named after
                     metadata.name, which its webhook carries back to identify this CR.
+                source:
+                  type: string
+                  enum: [logs, traces]
+                  description: >
+                    Which rows where and value read: the HyperDX logs source (logs, the default when
+                    omitted) or its traces source (traces, one row per span, with columns such as
+                    ServiceName, SpanName, StatusCode, StatusMessage, Duration and SpanAttributes).
+                    Row alerts only: refused with metricRef. A traces alert needs a non-empty where.
                 where:
                   type: string
                   default: ""
                   description: >
-                    ClickHouse SQL boolean expression over the logs source counted by the alert
+                    ClickHouse SQL boolean expression over the rows of source counted by the alert
                     (empty = all rows). The controller pins whereLanguage:"sql" on the tile, and the
-                    expression reaches the query's WHERE clause verbatim. Severity travels in the
-                    text rather than in a severity column, so predicates read off Body and, for
-                    Kubernetes events, the JSON inside it — e.g.
+                    expression reaches the query's WHERE clause verbatim. In the logs source,
+                    severity travels in the text rather than in a severity column, so predicates
+                    read off Body and, for Kubernetes events, the JSON inside it — e.g.
                     ResourceAttributes['telemetry.source'] = 'k8s-events' AND
-                    JSONExtractString(Body, 'object', 'reason') = 'BackOff'.
+                    JSONExtractString(Body, 'object', 'reason') = 'BackOff'. In the traces source,
+                    predicates read the span — e.g. ServiceName = 'snowplow' AND StatusCode =
+                    'Error'.
                 metricRef:
                   type: object
                   required: [name]
@@ -107,11 +121,12 @@ spec:
                 value:
                   type: string
                   description: >
-                    A ClickHouse SQL expression read from each log row that where matches,
+                    A ClickHouse SQL expression read from each row (of source) that where matches,
                     aggregated by aggregation instead of counting the rows — e.g. a cost extracted
-                    from the row's Body:
-                    toFloat64OrZero(extract(Body, 'agw\\.ai\\.usage\\.cost\\.total=([0-9.]+)')).
-                    Requires aggregation (avg, max, min, sum or p95). Log alerts only.
+                    from a log row's Body:
+                    toFloat64OrZero(extract(Body, 'agw\\.ai\\.usage\\.cost\\.total=([0-9.]+)')),
+                    or a span's duration in milliseconds: Duration / 1e6.
+                    Requires aggregation (avg, max, min, sum or p95). Row alerts only.
                 labels:
                   type: object
                   additionalProperties:

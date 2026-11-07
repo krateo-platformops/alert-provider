@@ -16,7 +16,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
 )
 
-// webhook is what every Alert's pass shares: the HyperDX source the alerts count and the generic
+// webhook is what every Alert's pass shares: the HyperDX sources the alerts read and the generic
 // webhook they notify, read and ensured at most once per poll interval.
 type webhook struct {
 	kube         client.Client
@@ -24,23 +24,23 @@ type webhook struct {
 	ttl          time.Duration
 	log          logging.Logger
 
-	mu     sync.Mutex
-	at     time.Time
-	source map[string]any
-	id     string
+	mu      sync.Mutex
+	at      time.Time
+	sources []map[string]any
+	id      string
 }
 
-// ensure returns the source and the webhook id. A webhook it has to create has a new id, so
+// ensure returns the sources and the webhook id. A webhook it has to create has a new id, so
 // alerts referencing the old one would notify a dead channel: it then deletes the HyperDX alerts
 // the Alerts of every namespace manage and resets their status, so they rebuild on this webhook. a,
 // the Alert this pass is for, is reset in memory, since its reconcile writes its status.
-func (w *webhook) ensure(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.Alert) (map[string]any, string, error) {
+func (w *webhook) ensure(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.Alert) ([]map[string]any, string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if !w.at.IsZero() && time.Since(w.at) < w.ttl {
-		return w.source, w.id, nil
+		return w.sources, w.id, nil
 	}
-	source, err := hdx.FirstSource(ctx)
+	sources, err := hdx.Sources(ctx)
 	if err != nil {
 		return nil, "", err
 	}
@@ -53,8 +53,8 @@ func (w *webhook) ensure(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.A
 			return nil, "", err
 		}
 	}
-	w.at, w.source, w.id = time.Now(), source, id
-	return source, id, nil
+	w.at, w.sources, w.id = time.Now(), sources, id
+	return sources, id, nil
 }
 
 func (w *webhook) reset(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.Alert) error {

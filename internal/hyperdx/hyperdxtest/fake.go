@@ -113,12 +113,13 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch kind {
 	case "sources":
-		// A log source first, as the alerts count, then a metric source, as HyperDX lists them.
+		// Logs, traces, then metrics, as HyperDX lists a ClickStack install's sources.
 		if a.Sources != nil {
 			reply(a.Sources)
 			return
 		}
-		reply([]any{map[string]any{"id": "src-1", "kind": "log"}, map[string]any{"id": "src-m", "kind": "metric"}})
+		reply([]any{map[string]any{"id": "src-1", "kind": "log"}, map[string]any{"id": "src-t", "kind": "trace"},
+			map[string]any{"id": "src-m", "kind": "metric"}})
 		return
 	case "charts":
 		a.seriesReqs = append(a.seriesReqs, body)

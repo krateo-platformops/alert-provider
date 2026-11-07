@@ -203,9 +203,30 @@ func TestMetricSourceIsTheSourceOfKindMetric(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, "id", hyperdx.ID(src), "src-m")
-	// The logs the count alerts read are unchanged: still the first source.
-	logs, _ := c.FirstSource(ctx)
+}
+
+// A source is picked by kind, not position: an install that lists its traces first still has its
+// row alerts read the logs they were written for.
+func TestASourceIsPickedByKindNotPosition(t *testing.T) {
+	c, api := client(t)
+	api.Sources = []any{map[string]any{"id": "src-t", "kind": "trace"}, map[string]any{"id": "src-1", "kind": "log"}}
+	srcs, err := c.Sources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, err := hyperdx.OfKind(srcs, hyperdx.KindLog)
+	if err != nil {
+		t.Fatal(err)
+	}
 	eq(t, "logs", hyperdx.ID(logs), "src-1")
+	traces, err := hyperdx.OfKind(srcs, hyperdx.KindTrace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "traces", hyperdx.ID(traces), "src-t")
+	if _, err := hyperdx.OfKind(srcs, hyperdx.KindMetric); err == nil || err.Error() != "no HyperDX metric source configured" {
+		t.Fatalf("err %v", err)
+	}
 }
 
 func TestNoMetricSourceIsAnError(t *testing.T) {

@@ -50,10 +50,34 @@ const RowGroup = "if(equals(arrayElement(ResourceAttributes, 'telemetry.source')
 	"concat(ServiceName, ' ', arrayElement(ResourceAttributes, 'k8s.namespace.name'), '/', " +
 	"arrayElement(ResourceAttributes, 'k8s.pod.name')))"
 
+// TraceRowGroup is RowGroup for a traces Alert: a line per distinct span, naming its service,
+// namespace, span name and status, so the groups stay as few as the operations that fail.
+const TraceRowGroup = "concat(ServiceName, ' ', arrayElement(ResourceAttributes, 'k8s.namespace.name'), ': ', " +
+	"SpanName, ' ', StatusCode, ' ', StatusMessage)"
+
+// Traces is the Alert source whose rows are spans; any other reads log records.
+const Traces = "traces"
+
+// GroupOf is the groupBy expression of an Alert reading source.
+func GroupOf(source string) string {
+	if source == Traces {
+		return TraceRowGroup
+	}
+	return RowGroup
+}
+
+// Records is what an Alert reading source counts, as a prompt names it.
+func Records(source string) string {
+	if source == Traces {
+		return "spans"
+	}
+	return "log records"
+}
+
 // System is the comparison's system message.
-const System = "You deduplicate incidents of a Kubernetes platform's alerts. Given the log records an " +
-	"alert matches now and its open incidents, name the incident whose root cause produces " +
-	"those records, or none."
+const System = "You deduplicate incidents of a Kubernetes platform's alerts. Given the records (log " +
+	"records or trace spans) an alert matches now and its open incidents, name the incident whose " +
+	"root cause produces those records, or none."
 
 // NoVerdict is no usable answer: the call failed or was rate-limited, or it carried no verdict
 // object.
@@ -82,6 +106,8 @@ type Alert struct {
 	Threshold     string // its Python str(); "1" when unset
 	ThresholdType string
 	Message       string
+	// Source is the Alert's spec.source: Traces, or empty (logs).
+	Source string
 }
 
 func status(incident map[string]any) map[string]any {
@@ -201,8 +227,8 @@ func Prompt(a Alert, incidents []map[string]any, rows []Row) string {
 	if thresholdType == "" {
 		thresholdType = "above"
 	}
-	return fmt.Sprintf("Alert \"%s\" counts the log records matching `%s` over the last %s and fires "+
-		"when that count is %s %s.%s\n\n", name, a.Where, interval, thresholdType, a.Threshold, intent) +
+	return fmt.Sprintf("Alert \"%s\" counts the %s matching `%s` over the last %s and fires "+
+		"when that count is %s %s.%s\n\n", name, Records(a.Source), a.Where, interval, thresholdType, a.Threshold, intent) +
 		"It fires now. The records it matches, by count:\n" + rowsText(rows) + "\n\n" +
 		"Its open incidents, newest first:\n\n" +
 		Incidents(incidents) +

@@ -35,6 +35,30 @@ Add your own by applying more `Alert` CRs.
 `thresholdType: above` is strictly-greater, so `threshold: 0` fires on the first matching row; give
 defaults a real threshold over a window.
 
+## Alerting on spans
+
+`spec.source: traces` makes `where` (and `value`) read **`otel_traces`**, one row per span, instead
+of the logs. A span carries its outcome in columns, so no Body parsing is needed:
+
+```yaml
+apiVersion: observability.krateo.io/v1alpha1
+kind: Alert
+metadata:
+  name: snowplow-failing-calls
+  namespace: krateo-system
+spec:
+  source: traces
+  where: "ServiceName = 'snowplow' AND StatusCode = 'Error'"
+  interval: 15m
+  threshold: 5
+  thresholdType: above
+  message: snowplow calls are failing
+```
+
+A traces Alert needs a `where`, and cannot take `metricRef`, `labels` or `ratio`. With `value` and
+`aggregation` it aggregates a value read from each span instead of counting them, e.g. `value:
+Duration / 1e6` with `aggregation: p95` for latency in milliseconds.
+
 ```sh
 kubectl apply -f default-alerts.yaml
 kubectl -n krateo-system get alerts
