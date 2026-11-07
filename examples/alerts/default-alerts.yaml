@@ -1,6 +1,8 @@
-# The three alerts the chart seeds by default (config.defaultAlerts), as applyable Alert CRs for
-# reference / editing / GitOps. When seeded by the reconciler, `${NAMESPACE}` is substituted with the
-# release namespace; here it is shown as krateo-system. spec.where is ClickHouse SQL over otel_logs
+# Three example alerts, as applyable Alert CRs for reference / editing / GitOps. The chart seeded
+# them by default until 0.2.63; it seeds none now (config.defaultAlerts: []), because the platform's
+# default alert set ships, tuned, in krateo-observability. To seed these, put them in
+# config.defaultAlerts, where `${NAMESPACE}` is substituted with the release namespace; here it is
+# shown as krateo-system. spec.where is ClickHouse SQL over otel_logs
 # (whereLanguage=sql); filter on Body/ResourceAttributes (SeverityText is empty on this pipeline);
 # scope every alert (namespace or a ServiceName self-exclusion) so it never diagnoses the telemetry
 # pipeline echoing its own query. thresholdType `above` is strictly-greater.

@@ -145,7 +145,7 @@
         "defaultAlerts": {
           "type": "array",
           "title": "Default alerts",
-          "description": "Default Alert CRs the reconciler seeds into HyperDX (rendered to DEFAULT_ALERTS_JSON). Set to [] to seed none.",
+          "description": "Alert CRs the reconciler seeds into its namespace on start when absent (rendered to DEFAULT_ALERTS_JSON). Empty by default: the platform default alerts ship in krateo-observability. Seeding never updates or deletes an Alert.",
           "items": {
             "type": "object",
             "properties": {

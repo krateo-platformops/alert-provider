@@ -45,62 +45,10 @@ config:
   # How often (seconds) the reconciler pushes Alert CRs to HyperDX and mirrors their state. Each
   # pass that finds an alert ALERT is one firing of it.
   reconcileInterval: 60
-  # Default Alert CRs the reconciler seeds into HyperDX (rendered to DEFAULT_ALERTS_JSON). Set to []
-  # to seed none. Each firing auto-launches a full incident-agent RCA, so this default set is kept
-  # DELIBERATELY SMALL, PLATFORM-SCOPED and HIGH-THRESHOLD — the goal is a few high-signal alerts that
-  # never storm, not broad coverage (add your own via Alert CRs; see examples/alerts/).
-  #
-  # `where` is ClickHouse SQL over otel_logs (the reconciler pins whereLanguage=sql; DO NOT use Lucene
-  # or SeverityText — this pipeline leaves SeverityText empty). Every `where` is either scoped to the
-  # platform namespace (`${NAMESPACE}` is substituted with the release namespace at render time) or
-  # excludes the observability stack's own ServiceNames, so an alert never diagnoses the telemetry
-  # pipeline itself. Thresholds are >0 over 15m so transient/rollout blips don't page. Every `where`
-  # skips DELETED rows, the copy of an expired Event that re-fires the alert an hour later.
-  defaultAlerts:
-  # The flagship platform-health signal: Krateo control-plane compositions failing to reconcile
-  # (controller-runtime's "Reconciler error" log + the provider's CannotObserveExternalResource event),
-  # cluster-wide but excluding every service that carries or evaluates telemetry (else it matches
-  # HyperDX's own echo of this query and diagnoses itself), and incident-controller (renamed
-  # incident-provider; both names stay excluded while either can be logging), whose own
-  # "Reconciler error" lines are about Incidents, not compositions (~21k rows a day on krateo-057,
-  # which kept this alert firing every minute).
-  - name: krateo-composition-reconcile-error
-    displayName: "Krateo — composition reconcile errors"
-    where: >-
-      (positionCaseInsensitive(Body, 'Reconciler error') > 0
-       OR JSONExtractString(Body, 'object', 'reason') = 'CannotObserveExternalResource')
-      AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider', 'incident-controller', 'incident-provider',
-          'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
-          'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
-      AND JSONExtractString(Body, 'type') != 'DELETED'
-    interval: 15m
-    threshold: 2
-    thresholdType: above
-    message: "Compositions are failing to reconcile — incident-agent will identify which and why."
-  # Platform pods crash-looping (kubelet BackOff event, scoped to the platform namespace so a tenant
-  # workload's crashloop never auto-triggers an RCA). threshold 3/15m ignores a single rollout blip.
-  - name: krateo-platform-crashloop
-    displayName: "Krateo — platform pod crash-looping"
-    where: >-
-      ResourceAttributes['k8s.namespace.name'] = '${NAMESPACE}'
-      AND ResourceAttributes['telemetry.source'] = 'k8s-events'
-      AND JSONExtractString(Body, 'type') != 'DELETED'
-      AND JSONExtractString(Body, 'object', 'reason') = 'BackOff'
-      AND positionCaseInsensitive(JSONExtractString(Body, 'object', 'message'), 'restarting failed container') > 0
-    interval: 15m
-    threshold: 3
-    thresholdType: above
-    message: "A platform pod is crash-looping — incident-agent will triage the cause."
-  # Platform image-pull failures (bad/private image pin, registry auth) in the platform namespace.
-  - name: krateo-platform-image-pull-failure
-    displayName: "Krateo — platform image pull failing"
-    where: >-
-      ResourceAttributes['k8s.namespace.name'] = '${NAMESPACE}'
-      AND ResourceAttributes['telemetry.source'] = 'k8s-events'
-      AND JSONExtractString(Body, 'type') != 'DELETED'
-      AND JSONExtractString(Body, 'object', 'reason') = 'Failed'
-      AND positionCaseInsensitive(JSONExtractString(Body, 'object', 'message'), 'failed to pull image') > 0
-    interval: 15m
-    threshold: 2
-    thresholdType: above
-    message: "A platform pod cannot pull its image — incident-agent will triage the cause."
+  # Alert CRs the reconciler seeds into its namespace on start when they are absent (rendered to
+  # DEFAULT_ALERTS_JSON; `${NAMESPACE}` is substituted with the release namespace). None by default:
+  # the platform's default alert set ships in krateo-observability, tuned there, and a second set here
+  # would duplicate it, each firing launching its own incident-agent RCA. Seeding never updates or
+  # deletes an Alert, so turning this off leaves earlier seeded copies in place to be removed by hand.
+  # examples/alerts/default-alerts.yaml keeps the three this chart used to seed, as a reference.
+  defaultAlerts: []

@@ -8,8 +8,13 @@ timestamp: 2026-08-24T00:00:00Z
 
 # Default alerts
 
-The chart seeds three high-signal, platform-scoped alerts (`config.defaultAlerts`), shown in
-[`default-alerts.yaml`](./default-alerts.yaml) as applyable `Alert` CRs for reference and editing:
+The chart seeds **no** alerts by default (`config.defaultAlerts: []`): the platform's default alert
+set ships, tuned, in krateo-observability, and a second set here would duplicate it. Seeding only
+creates absent Alerts and never deletes one, so an install upgraded from a version that seeded keeps
+those copies until they are deleted.
+
+[`default-alerts.yaml`](./default-alerts.yaml) keeps the three alerts the chart used to seed, as
+applyable `Alert` CRs for reference and editing:
 
 | alert | fires on | interval / threshold |
 |---|---|---|
@@ -17,8 +22,8 @@ The chart seeds three high-signal, platform-scoped alerts (`config.defaultAlerts
 | `krateo-platform-crashloop` | a platform pod crash-looping | 15m / `>3` |
 | `krateo-platform-image-pull-failure` | a platform pod cannot pull its image | 15m / `>2` |
 
-Each firing auto-launches an incident-agent RCA, so the default set is deliberately **small,
-platform-scoped and high-threshold** — the goal is a few signals that never storm, not broad coverage.
+Each firing of an Alert in the provider's namespace launches an incident-agent RCA, so a default
+set should be **small, platform-scoped and high-threshold** — the goal is a few signals that never storm, not broad coverage.
 Add your own by applying more `Alert` CRs.
 
 ## Writing an Alert
