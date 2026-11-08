@@ -112,6 +112,12 @@ How HyperDX evaluates it:
   and notifies nothing; the fifth fires.
 - **One OK interval resolves** the group (and notifies, if it had fired).
 - **A gap restarts the count**: an interval without a sample is skipped, not counted as unready.
+- **Sample faster than the interval.** HyperDX judges a minute the moment it closes, before that
+  minute's last point is ingested. `k8sclusterreceiver` at its 60 s default stamps every point at
+  second :59, so a `1m` alert reads an empty minute every time, and under `below` an empty minute
+  breaches: HyperDX fires one ungrouped alert per minute. Set the receiver's `collection_interval`
+  to `30s` (each minute then holds a mid-minute point HyperDX can read). See
+  [Grouped alerts](../../docs/overview.md#grouped-alerts).
 - The keys are read off the point or, as here, its resource; a key matches either.
 - HyperDX's notification opens with `Group: "…"`, the firing series' keys and values, before the
   message, which is pushed as written. The provider's webhook log carries that line:
