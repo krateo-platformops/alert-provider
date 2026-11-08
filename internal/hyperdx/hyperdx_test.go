@@ -313,3 +313,24 @@ func TestTileSelectReadsTheGroupBy(t *testing.T) {
 	sel.GroupBy = nil
 	eq(t, "ungrouped drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), true)
 }
+
+func TestTheWebhookBodyIsJSONCarryingTheNotificationBodyAndEventID(t *testing.T) {
+	var body map[string]any
+	if err := json.Unmarshal([]byte(hyperdx.DefaultWebhookBody), &body); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "body", body, map[string]any{"alertName": "{{title}}", "state": "{{state}}", "body": "{{body}}",
+		"eventId": "{{eventId}}", "source": "hyperdx-alert"})
+}
+
+// An install's webhook carries the body before body and eventId: it is PUT in place, keeping its
+// id, so its alerts keep notifying it and none is recreated.
+func TestThePreviousDefaultBodyConvergesInPlace(t *testing.T) {
+	c, api := client(t)
+	api.Put("webhooks", map[string]any{"id": "w1", "name": "krateo-alert-provider", "service": "generic", "url": "http://x/****",
+		"body": `{"alertName":"{{title}}","state":"{{state}}","source":"hyperdx-alert"}`})
+	id, created, err := c.EnsureWebhook(ctx, "krateo-alert-provider", "http://x/webhook", "")
+	eq(t, "ensure", []any{id, created, err}, []any{"w1", false, nil})
+	eq(t, "body", api.Get("webhooks", "w1")["body"], hyperdx.DefaultWebhookBody)
+	eq(t, "writes", api.Writes(), []hyperdxtest.Write{hyperdxtest.W("PUT", "webhooks", "w1")})
+}

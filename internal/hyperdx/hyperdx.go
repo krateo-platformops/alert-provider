@@ -31,7 +31,13 @@ import (
 // alert id. {{title}} is a state emoji plus the HyperDX alert name: its Alert CR's metadata.name,
 // <namespace>/<name> outside the provider's namespace (alert.HyperDXName). {{state}} is ALERT on a firing and OK on a resolve. The provider only logs a
 // notification: the reconcile fires alerts.
-const DefaultWebhookBody = `{"alertName":"{{title}}","state":"{{state}}","source":"hyperdx-alert"}`
+//
+// {{body}} is the rendered notification: for a grouped tile alert it opens with HyperDX's own
+// `Group: "<group>"` line, and the message follows (see GroupLine). {{eventId}} is a hash of the
+// alert, the channel and the group. The body is safe inside a JSON string: HyperDX 2.35 compiles a
+// generic webhook body with noEscape but passes body, title and link through escapeJsonString
+// (tasks/checkAlerts/template.ts).
+const DefaultWebhookBody = `{"alertName":"{{title}}","state":"{{state}}","body":"{{body}}","eventId":"{{eventId}}","source":"hyperdx-alert"}`
 
 // granularities are the charts/series bucket sizes, in seconds.
 var granularities = []struct {

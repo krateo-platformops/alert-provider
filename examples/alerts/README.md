@@ -113,7 +113,8 @@ How HyperDX evaluates it:
 - **One OK interval resolves** the group (and notifies, if it had fired).
 - **A gap restarts the count**: an interval without a sample is skipped, not counted as unready.
 - The keys are read off the point or, as here, its resource; a key matches either.
-- The notification ends with `Group: ` and the firing series' keys and values.
+- The notification names the firing series' keys and values (`Group: …`), and the provider's
+  webhook log carries that line: `[webhook] '🚨 sre-pod-not-ready' ALERT group="…" eventId=…`.
 
 HyperDX never resolves a series that stops reporting (a deleted pod), and its API shows only the
 roll-up state, so the provider lists the series that are ALERT in `status.groups`:
