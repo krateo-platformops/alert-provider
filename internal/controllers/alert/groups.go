@@ -98,10 +98,14 @@ func Groups(spec v1alpha1.AlertSpec, prev []v1alpha1.AlertGroup, buckets []hyper
 		}
 		return false
 	})
-	if len(out) > v1alpha1.MaxGroups {
-		return out[:v1alpha1.MaxGroups], int32(len(out) - v1alpha1.MaxGroups)
+	if len(out) <= v1alpha1.MaxGroups {
+		return out, 0
 	}
-	return out, 0
+	var left int32 // counted rather than converted from an int len (gosec G115)
+	for range out[v1alpha1.MaxGroups:] {
+		left++
+	}
+	return out[:v1alpha1.MaxGroups], left
 }
 
 func sameGroup(a, b map[string]string) bool {
