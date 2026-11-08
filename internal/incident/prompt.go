@@ -37,6 +37,9 @@ func BuildPrompt(alertName, alertState, where, message, source string) string {
 // Process logs a HyperDX notification. It opens nothing: the reconcile mirrors every alert's state
 // on each pass and fires the firing ones, so a notification would only fire twice. The webhook
 // exists because a HyperDX alert needs a channel; the body is hyperdx.DefaultWebhookBody.
+//
+// Of the notification's body it logs only the group line (a grouped alert's series), never the
+// rest: a body can quote the records it counted. It logs the eventId too, when there is one.
 func Process(log logging.Logger, payload any) {
 	p, _ := payload.(map[string]any)
 	title := ""
@@ -57,5 +60,37 @@ func Process(log logging.Logger, payload any) {
 	if state == "" {
 		state = "?"
 	}
-	log.Info(fmt.Sprintf("[webhook] %s %s: the reconciler evaluates it on its next pass", pyfmt.Repr(title), state))
+	line := fmt.Sprintf("[webhook] %s %s", pyfmt.Repr(title), state)
+	if body, ok := p["body"].(string); ok {
+		if g := Group(body); g != "" {
+			line += fmt.Sprintf(" group=%q", pyfmt.Cut(g, 1000))
+		}
+	}
+	if id, ok := p["eventId"].(string); ok && id != "" {
+		line += " eventId=" + pyfmt.Cut(id, 100)
+	}
+	log.Info(line + ": the reconciler evaluates it on its next pass")
+}
+
+// Group is the series a notification body names, "" when it names none. HyperDX 2.35 opens a
+// grouped alert's body with `Group: "<group>"` (followed by " - The alert has been resolved." on a
+// resolve), so the first such quoted line is the group. A body without one falls back to the first
+// unquoted "Group: " line, e.g. one a message writes itself.
+func Group(body string) string {
+	unquoted := ""
+	for _, l := range strings.Split(body, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(l), "Group: ")
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(rest, `"`) {
+			if end := strings.LastIndex(rest, `"`); end > 0 {
+				return rest[1:end]
+			}
+		}
+		if unquoted == "" {
+			unquoted = strings.TrimSpace(rest)
+		}
+	}
+	return unquoted
 }

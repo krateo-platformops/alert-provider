@@ -96,7 +96,8 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 3 {
 		id = parts[3]
 	}
-	if r.Method != http.MethodGet {
+	// A charts/series POST is a query, not a write.
+	if r.Method != http.MethodGet && kind != "charts" {
 		a.writes = append(a.writes, Write{r.Method, kind, id})
 	}
 	if a.Fail != nil {

@@ -247,6 +247,9 @@ func (e *external) refuse(a *v1alpha1.Alert, why string) reconciler.ExternalObse
 // cannot apply to, is why it is refused.
 func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) {
 	if !a.IsMetric() {
+		if a.Grouped() { // the CRD refuses it too
+			return "groupBy splits a metric's series; it requires metricRef.", nil
+		}
 		rows, err := e.rowSource(a)
 		if err != nil {
 			return "", err
@@ -286,7 +289,8 @@ func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) 
 func fields(home string, a *v1alpha1.Alert) hyperdx.AlertFields {
 	spec := a.Spec
 	f := hyperdx.AlertFields{Interval: spec.Interval, Threshold: threshold(spec),
-		ThresholdType: spec.ThresholdType, Message: spec.Message}
+		ThresholdType: spec.ThresholdType, Message: spec.Message,
+		ConsecutiveWindows: a.Windows()}
 	if spec.ThresholdMax != "" {
 		f.ThresholdMax = spec.ThresholdMax
 	}
@@ -465,6 +469,11 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 	// An empty error clears a SpecDrift's message once the spec matches.
 	a.Status.Phase, a.Status.Error = v1alpha1.PhaseSynced, ""
+	// A pass with a push reads the groups after it (Update), so a failed read never holds a push
+	// back. The live state was read, so Ready stands on a failed one.
+	if err := e.groups(ctx, a); err != nil {
+		return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(err)
+	}
 	return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
 }
 
@@ -535,9 +544,13 @@ func (e *external) Update(ctx context.Context, mg resource.Managed) error {
 		}
 	}
 	if e.plan.create {
-		return e.create(ctx, a)
+		if err := e.create(ctx, a); err != nil {
+			return err
+		}
+	} else if err := e.push(ctx, a); err != nil {
+		return err
 	}
-	return e.push(ctx, a)
+	return e.groups(ctx, a)
 }
 
 // create makes the dashboard tile, then an alert on it named after the Alert.
@@ -561,7 +574,8 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 }
 
 // push puts the spec onto the live alert where they disagree. The spec spans two objects:
-// threshold, thresholdType, interval and message live on the alert, `where` on the dashboard tile.
+// threshold, thresholdType, interval, message and consecutiveWindows live on the alert; `where`,
+// the select and groupBy on the dashboard tile.
 // The alert's name is pushed too: it ties the HyperDX alert to its Alert.
 func (e *external) push(ctx context.Context, a *v1alpha1.Alert) error {
 	tile := e.plan.tileID

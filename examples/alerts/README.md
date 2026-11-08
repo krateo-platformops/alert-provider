@@ -71,3 +71,63 @@ kubectl -n krateo-system get alerts
 
 For a full fault-injection lab (13 alerts paired with a `breakers.yaml` that injects each fault), see
 [`krateo-agentiko/incident-agent` → `examples/alert-lab/`](https://github.com/krateo-agentiko/incident-agent/tree/main/examples/alert-lab).
+
+## Alerting per container
+
+`spec.groupBy` makes a metric Alert evaluate one series per group, so one container that is not
+ready fires however many are ready. A container not ready for five minutes in a row:
+
+```yaml
+apiVersion: observability.krateo.io/v1alpha1
+kind: Metric
+metadata:
+  name: k8s-container-ready
+  namespace: krateo-system
+spec:
+  metricName: k8s.container.ready   # k8sclusterreceiver: 1 ready, 0 not
+  type: gauge
+---
+apiVersion: observability.krateo.io/v1alpha1
+kind: Alert
+metadata:
+  name: sre-pod-not-ready
+  namespace: krateo-system
+spec:
+  metricRef: {name: k8s-container-ready}
+  aggregation: max
+  groupBy: [k8s.namespace.name, k8s.pod.name, k8s.container.name]
+  interval: 1m
+  consecutiveWindows: 5
+  threshold: 1
+  thresholdType: below
+  message: A container is not ready.
+```
+
+How HyperDX evaluates it:
+
+- **A gauge is its last sample per interval**, per series; `aggregation` combines the series of one
+  group. With the container in the keys a group is one series, so `max` and `min` agree. Group by
+  pod alone and `max` hides a pod's one unready container: use `min` then.
+- **`consecutiveWindows` is counted per group.** A container unready for four minutes is PENDING
+  and notifies nothing; the fifth fires.
+- **One OK interval resolves** the group (and notifies, if it had fired).
+- **A gap restarts the count**: an interval without a sample is skipped, not counted as unready.
+- The keys are read off the point or, as here, its resource; a key matches either.
+- HyperDX's notification opens with `Group: "…"`, the firing series' keys and values, before the
+  message, which is pushed as written. The provider's webhook log carries that line:
+  `[webhook] '🚨 sre-pod-not-ready' ALERT group="…" eventId=…`.
+
+HyperDX never resolves a series that stops reporting (a deleted pod), and its API shows only the
+roll-up state, so the provider lists the series that are ALERT in `status.groups`:
+
+```yaml
+status:
+  state: ALERT
+  groups:
+  - group: {k8s.namespace.name: krateo-system, k8s.pod.name: snowplow-5c4954d6fc-s5rvj, k8s.container.name: snowplow}
+    value: 0
+    since: "2026-11-08T15:35:00Z"
+```
+
+A series drops out of `status.groups` once it is ready again or gone. It is judged one interval
+late (the newest minute may not be ingested yet), so it can trail HyperDX's own state by a minute.

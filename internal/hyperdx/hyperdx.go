@@ -14,8 +14,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,7 +31,14 @@ import (
 // alert id. {{title}} is a state emoji plus the HyperDX alert name: its Alert CR's metadata.name,
 // <namespace>/<name> outside the provider's namespace (alert.HyperDXName). {{state}} is ALERT on a firing and OK on a resolve. The provider only logs a
 // notification: the reconcile fires alerts.
-const DefaultWebhookBody = `{"alertName":"{{title}}","state":"{{state}}","source":"hyperdx-alert"}`
+//
+// {{body}} is the rendered notification: for a grouped tile alert it opens with HyperDX's own
+// `Group: "<group>"` line (template.ts: {{#if group}}Group: "{{{group}}}"{{/if}}), on a firing and
+// a resolve alike, and the alert's message follows it. {{eventId}} is a hash of the
+// alert, the channel and the group. The body is safe inside a JSON string: HyperDX 2.35 compiles a
+// generic webhook body with noEscape but passes body, title and link through escapeJsonString
+// (tasks/checkAlerts/template.ts).
+const DefaultWebhookBody = `{"alertName":"{{title}}","state":"{{state}}","body":"{{body}}","eventId":"{{eventId}}","source":"hyperdx-alert"}`
 
 // granularities are the charts/series bucket sizes, in seconds.
 var granularities = []struct {
@@ -173,6 +182,14 @@ type Select struct {
 	// Ratio, when set, is the denominator: the tile carries both select items with asRatio, and
 	// HyperDX evaluates this select divided by Ratio (renderChartConfig: divide(a, b)).
 	Ratio *Select
+	// GroupBy are SQL expressions, one per group key: the tile evaluates one series per distinct
+	// tuple of their values, and HyperDX alerts on each series on its own. Empty for one series.
+	GroupBy []string
+}
+
+// groupBy is the tile's config.groupBy: GroupBy as one comma-separated SQL list.
+func (s Select) groupBy() string {
+	return strings.Join(s.GroupBy, ", ")
 }
 
 // CountSelect counts the rows matching where.
@@ -208,6 +225,8 @@ func (s Select) items() []map[string]any {
 type LiveTile struct {
 	Selects []map[string]any
 	AsRatio bool
+	// GroupBy is the tile's config.groupBy, empty when it has none.
+	GroupBy string
 }
 
 // First is the live tile's first select item, empty when it has none.
@@ -218,11 +237,12 @@ func (l LiveTile) First() map[string]any {
 	return l.Selects[0]
 }
 
-// SelectDrift says whether a live tile's select items, asRatio and source differ from what sel
-// and source would write. Only the keys sel writes are compared, as strings, so a field HyperDX
-// adds to its answer is never a drift; a different number of items, or a flipped asRatio, is.
+// SelectDrift says whether a live tile's select items, asRatio, groupBy and source differ from
+// what sel and source would write. Only the keys sel writes are compared, as strings, so a field
+// HyperDX adds to its answer is never a drift; a different number of items, a flipped asRatio, or
+// another groupBy, is.
 func SelectDrift(live LiveTile, liveSourceID string, source map[string]any, sel Select) bool {
-	if liveSourceID != ID(source) {
+	if liveSourceID != ID(source) || live.GroupBy != sel.groupBy() {
 		return true
 	}
 	want := sel.items()
@@ -289,6 +309,70 @@ func (c *Client) RecordCounts(ctx context.Context, sourceID, where string, secon
 	return rows, nil
 }
 
+// Bucket is one interval of one series of a grouped select, as /api/v2/charts/series answers it.
+type Bucket struct {
+	// Start is the interval's start.
+	Start time.Time
+	// Group are the series' groupBy values, in the select's GroupBy order; "" for a null.
+	Group []string
+	// Value is the select's value over the interval; false when the series has none there.
+	Value float64
+	Has   bool
+}
+
+// GroupBuckets are sel's buckets over source in [start, end), one per interval of granularity
+// that a series of sel's groupBy has data in: the same select, groupBy and buckets HyperDX alerts
+// on (a granularity is an interval's name, its buckets aligned as toStartOfInterval aligns them).
+// A bucket the reply places outside the range is dropped, so an end HyperDX takes as inclusive
+// never adds an interval that has only begun.
+func (c *Client) GroupBuckets(ctx context.Context, source map[string]any, sel Select, granularity string, start, end time.Time) ([]Bucket, error) {
+	series := map[string]any{"sourceId": ID(source), "aggFn": sel.AggFn, "where": sel.Where,
+		"whereLanguage": "sql", "groupBy": sel.GroupBy}
+	if sel.AggFn == "quantile" {
+		series["level"] = sel.Level
+	}
+	if sel.MetricName != "" {
+		series["metricName"], series["metricDataType"] = sel.MetricName, sel.MetricType
+	} else if sel.ValueExpression != "" {
+		series["field"] = sel.ValueExpression
+	}
+	v, err := c.req(ctx, http.MethodPost, "/api/v2/charts/series", map[string]any{
+		"startTime": start.UnixMilli(), "endTime": end.UnixMilli(), "granularity": granularity,
+		"series": []any{series}})
+	if err != nil {
+		return nil, err
+	}
+	var out []Bucket
+	for _, b := range maps(v) {
+		ms, ok := pyfmt.Float(b["ts_bucket"])
+		if !ok {
+			return nil, fmt.Errorf("charts/series: a bucket without a ts_bucket: %s", pyfmt.Dumps(b))
+		}
+		t := time.UnixMilli(int64(ms)).UTC()
+		if t.Before(start) || !t.Before(end) {
+			continue
+		}
+		g, _ := b["group"].([]any)
+		group := make([]string, len(sel.GroupBy))
+		for i := range group {
+			if i < len(g) && g[i] != nil {
+				group[i] = pyfmt.Str(g[i])
+			}
+		}
+		bucket := Bucket{Start: t, Group: group}
+		// A null is no data, never 0: HyperDX skips it rather than evaluate a gap. A NaN (an
+		// average over no points) is no data too.
+		if x := b["series_0.data"]; x != nil {
+			bucket.Value, bucket.Has = pyfmt.Float(x)
+			if !bucket.Has || math.IsNaN(bucket.Value) || math.IsInf(bucket.Value, 0) {
+				bucket.Value, bucket.Has = 0, false
+			}
+		}
+		out = append(out, bucket)
+	}
+	return out, nil
+}
+
 // EnsureWebhook ensures a generic webhook named name exists and sends DefaultWebhookBody. It
 // returns the webhook's id and whether it was created. An existing webhook whose body differs is
 // updated in place (PUT keeps its id, so its alerts keep notifying it); only a new webhook, whose
@@ -340,22 +424,28 @@ func (c *Client) invalidate() {
 // tileFor is the single over-time tile, as both create and update send it. A create mints a new
 // tile id whatever is sent. An update must send the live tile's id: an unknown id makes HyperDX
 // mint a new tile, drop the old one and delete every alert on it.
+//
+// It stays a line even when grouped: the v2 API takes groupBy on line and stacked-bar tiles only.
 func tileFor(name string, source map[string]any, sel Select, tileID string) map[string]any {
+	config := map[string]any{
+		"displayType": "line",
+		"sourceId":    source["id"],
+		"asRatio":     sel.Ratio != nil,
+		"fillNulls":   true,
+		"select":      anys(sel.items()),
+	}
+	if len(sel.GroupBy) > 0 {
+		config["groupBy"] = sel.groupBy()
+	}
 	return map[string]any{
 		"id": tileID, "x": 0, "y": 0, "w": 6, "h": 3,
-		"name": name,
-		"config": map[string]any{
-			"displayType": "line",
-			"sourceId":    source["id"],
-			"asRatio":     sel.Ratio != nil,
-			"fillNulls":   true,
-			"select":      anys(sel.items()),
-		},
+		"name":   name,
+		"config": config,
 	}
 }
 
-// TileSelect is the live tile's select items and asRatio, and its source id; false when the
-// dashboard is gone.
+// TileSelect is the live tile's select items, asRatio and groupBy, and its source id; false when
+// the dashboard is gone.
 func (c *Client) TileSelect(ctx context.Context, dashboardID string) (LiveTile, string, bool, error) {
 	ds, err := c.ListDashboards(ctx)
 	if err != nil {
@@ -372,7 +462,8 @@ func (c *Client) TileSelect(ctx context.Context, dashboardID string) (LiveTile, 
 		cfg, _ := t[0]["config"].(map[string]any)
 		src, _ := cfg["sourceId"].(string)
 		ratio, _ := cfg["asRatio"].(bool)
-		return LiveTile{Selects: maps(cfg["select"]), AsRatio: ratio}, src, true, nil
+		groupBy, _ := cfg["groupBy"].(string)
+		return LiveTile{Selects: maps(cfg["select"]), AsRatio: ratio, GroupBy: groupBy}, src, true, nil
 	}
 	return LiveTile{}, "", false, nil
 }
@@ -488,10 +579,13 @@ type AlertFields struct {
 	// ThresholdMax is the range's upper bound for between and not_between; nil otherwise.
 	ThresholdMax any
 	Message      string
+	// ConsecutiveWindows is HyperDX's numConsecutiveWindows, counted per group; 0 or 1 is one
+	// window, HyperDX's default, and is not sent.
+	ConsecutiveWindows int
 }
 
 // mutable are the alert fields a CR may change after creation.
-var mutable = []string{"interval", "threshold", "thresholdType", "thresholdMax", "message"}
+var mutable = []string{"interval", "threshold", "thresholdType", "thresholdMax", "message", "numConsecutiveWindows"}
 
 // alertBody is the alert document as both POST and PUT take it: PUT is a full replace validated
 // against the same schema as POST, so one builder keeps the two from drifting.
@@ -514,7 +608,21 @@ func alertBody(name, dashboardID, tileID, webhookID string, f AlertFields) map[s
 	if f.ThresholdMax != nil {
 		b["thresholdMax"] = f.ThresholdMax
 	}
+	// PUT is a full replace, and HyperDX clears a numConsecutiveWindows it is not sent, so leaving
+	// it out sets one window.
+	if f.ConsecutiveWindows > 1 {
+		b["numConsecutiveWindows"] = f.ConsecutiveWindows
+	}
 	return b
+}
+
+// windows is a numConsecutiveWindows as compared: HyperDX answers null when it is unset, which is
+// one window, as 1 is.
+func windows(v any) string {
+	if f, ok := pyfmt.Float(v); ok && f > 1 {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return "1"
 }
 
 // AlertDrift are the mutable fields and the name that differ between the live alert and the CR,
@@ -525,6 +633,12 @@ func AlertDrift(live map[string]any, name string, f AlertFields) []string {
 	body := alertBody(name, "", "", "", f)
 	var out []string
 	for _, field := range append(append([]string{}, mutable...), "name") {
+		if field == "numConsecutiveWindows" {
+			if windows(live[field]) != windows(body[field]) {
+				out = append(out, field)
+			}
+			continue
+		}
 		if pyfmt.Str(live[field]) != pyfmt.Str(body[field]) {
 			out = append(out, field)
 		}
