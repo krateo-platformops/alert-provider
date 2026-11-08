@@ -118,8 +118,34 @@ type AlertSpec struct {
 	// not_between (value in [threshold, thresholdMax], or outside it) and refused with any other.
 	ThresholdMax json.Number `json:"thresholdMax,omitempty"`
 
-	// Message is the notification message.
+	// Message is the notification message. With GroupBy, the message pushed to HyperDX ends with
+	// a line naming the group; Message itself stays as written.
 	Message string `json:"message,omitempty"`
+
+	// GroupBy splits a metric Alert into one series per distinct value of these attribute keys,
+	// each read off the point, or off its resource when the point lacks it (as Labels match).
+	// HyperDX evaluates each series on its own, so one unhealthy series fires however many
+	// healthy ones there are. Metric alerts only, never with Ratio.
+	GroupBy []string `json:"groupBy,omitempty"`
+
+	// ConsecutiveWindows is how many consecutive intervals the condition must hold before the
+	// alert fires; HyperDX counts them per group. 1 when unset.
+	ConsecutiveWindows int32 `json:"consecutiveWindows,omitempty"`
+}
+
+// MaxGroups caps status.groups: the groups past it are counted in status.groupsTruncated.
+const MaxGroups = 50
+
+// AlertGroup is one series of a grouped Alert that is ALERT: its condition held on each of the
+// last consecutiveWindows completed intervals.
+type AlertGroup struct {
+	// Group is the series' value of each groupBy key.
+	Group map[string]string `json:"group"`
+	// Value is the series' value in the last completed interval.
+	Value json.Number `json:"value"`
+	// Since is when the series started breaching (RFC 3339): the start of the earliest breaching
+	// interval in the window, kept while the series stays listed.
+	Since string `json:"since"`
 }
 
 // AlertStatus mirrors the live HyperDX alert.
@@ -137,6 +163,14 @@ type AlertStatus struct {
 
 	// Phase is the reconcile phase: Pending, Invalid, Synced, SpecDrift or Error.
 	Phase string `json:"phase,omitempty"`
+
+	// Groups are the series of a grouped Alert (spec.groupBy) that are ALERT, computed by the
+	// provider each pass: HyperDX's API carries only the rolled-up state. Sorted by group; at most
+	// MaxGroups.
+	Groups []AlertGroup `json:"groups,omitempty"`
+
+	// GroupsTruncated counts the ALERT groups left out of Groups past MaxGroups.
+	GroupsTruncated int32 `json:"groupsTruncated,omitempty"`
 
 	Error string `json:"error,omitempty"`
 }
@@ -177,6 +211,19 @@ func (mg *Alert) RowSource() string {
 		return SourceLogs
 	}
 	return mg.Spec.Source
+}
+
+// Grouped says the Alert evaluates one series per group (spec.groupBy).
+func (mg *Alert) Grouped() bool {
+	return len(mg.Spec.GroupBy) > 0
+}
+
+// Windows is spec.consecutiveWindows, 1 when unset.
+func (mg *Alert) Windows() int {
+	if mg.Spec.ConsecutiveWindows < 1 {
+		return 1
+	}
+	return int(mg.Spec.ConsecutiveWindows)
 }
 
 // Aggregated says the Alert compares an aggregated value (a metric, or a value read from log

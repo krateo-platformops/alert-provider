@@ -98,6 +98,9 @@ spec:
 - The count rules under `threshold` do not apply: a metric's value can be anything.
 - A metric firing opens no Incident (incidents read log records); its `status.state` is `ALERT`
   and HyperDX notifies through the webhook.
+- `groupBy` evaluates one series per group, e.g. per container, so a healthy series cannot mask
+  an unhealthy one, and `consecutiveWindows` waits that many intervals before firing; the series
+  that are ALERT are listed in `status.groups` (see [the readiness example](../examples/alerts/README.md#alerting-per-container)).
 
 ## Pause an alert
 

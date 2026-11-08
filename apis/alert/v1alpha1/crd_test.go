@@ -62,6 +62,13 @@ func TestTheCRDCarriesEveryField(t *testing.T) {
 	if got, want := keys(props["spec"].Properties["metricRef"].Properties), jsonFields(reflect.TypeOf(MetricRef{})); !reflect.DeepEqual(got, want) {
 		t.Errorf("spec.metricRef: CRD %v, types %v", got, want)
 	}
+	groups := props["status"].Properties["groups"]
+	if groups.Items == nil || groups.Items.Schema == nil {
+		t.Fatal("status.groups has no item schema")
+	}
+	if got, want := keys(groups.Items.Schema.Properties), jsonFields(reflect.TypeOf(AlertGroup{})); !reflect.DeepEqual(got, want) {
+		t.Errorf("status.groups[]: CRD %v, types %v", got, want)
+	}
 }
 
 // TestTheMetricCRDCarriesEveryField holds the hand-written Metric CRD to its type.

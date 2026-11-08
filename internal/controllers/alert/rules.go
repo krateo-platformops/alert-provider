@@ -88,7 +88,8 @@ func ValueSelect(spec v1alpha1.AlertSpec) (hyperdx.Select, string) {
 // MetricSelect is the tile select of a metric Alert whose metric is m, or why the pairing is
 // refused. Like Tautology, a refusal is a sentence an operator can act on.
 func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Select, string) {
-	sel := hyperdx.Select{Where: LabelsWhere(spec.Labels), MetricName: m.MetricName, MetricType: m.Type}
+	sel := hyperdx.Select{Where: LabelsWhere(spec.Labels), MetricName: m.MetricName, MetricType: m.Type,
+		GroupBy: GroupBy(spec.GroupBy)}
 	switch spec.Aggregation {
 	case v1alpha1.AggregationAvg, v1alpha1.AggregationMax, v1alpha1.AggregationMin, v1alpha1.AggregationSum:
 		sel.AggFn = spec.Aggregation
@@ -108,6 +109,11 @@ func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Selec
 	}
 	if spec.Ratio == nil {
 		return sel, ""
+	}
+	// A grouped ratio needs both totals grouped alike, and HyperDX pairs a ratio's two selects
+	// only ungrouped. The CRD refuses the pair too.
+	if len(spec.GroupBy) > 0 {
+		return hyperdx.Select{}, "groupBy and ratio cannot be combined: a grouped ratio would need both its totals grouped alike."
 	}
 	// A ratio divides two totals of the same metric. Only a total divides meaningfully: an
 	// average, extreme or percentile over a ratio's denominator is not a share of anything.
@@ -143,38 +149,67 @@ func IdleFires(threshold any, thresholdType string, thresholdMax any) string {
 	if !ok {
 		return ""
 	}
-	upper, hasUpper := pyfmt.Float(thresholdMax)
 	kind := strings.ToLower(thresholdType)
 	if kind == "" {
 		kind = "above"
 	}
-	var fires bool
-	switch kind {
-	case "above":
-		fires = 0 >= value
-	case "above_exclusive":
-		fires = 0 > value
-	case "below":
-		fires = 0 < value
-	case "below_or_equal":
-		fires = 0 <= value
-	case "equal":
-		fires = value == 0
-	case "not_equal":
-		fires = value != 0
-	case "between":
-		fires = hasUpper && value <= 0 && 0 <= upper
-	case "not_between":
-		fires = hasUpper && (0 < value || 0 > upper)
-	default:
-		return ""
-	}
-	if !fires {
+	if fires, ok := Exceeds(0, kind, value, thresholdMax); !ok || !fires {
 		return ""
 	}
 	return fmt.Sprintf("a ratio with thresholdType '%s' %s holds at 0, and HyperDX evaluates a window with no traffic as 0, "+
 		"so this fires whenever the service is idle. Alert on the failing share instead: labels select the failures, "+
 		"thresholdType 'above' a positive threshold (e.g. above 0.01 rather than a success share below 0.99).", kind, pyfmt.Str(threshold))
+}
+
+// Exceeds is HyperDX's doesExceedThreshold: whether value breaches threshold under thresholdType
+// ("" is above), with thresholdMax the upper bound of a range. ok is false when the comparison
+// cannot be made: a threshold that is not a number, an unknown type, or a range without its bound.
+func Exceeds(value float64, thresholdType string, threshold, thresholdMax any) (exceeds, ok bool) {
+	t, ok := pyfmt.Float(threshold)
+	if !ok {
+		return false, false
+	}
+	upper, hasUpper := pyfmt.Float(thresholdMax)
+	switch strings.ToLower(thresholdType) {
+	case "above", "":
+		return value >= t, true
+	case "above_exclusive":
+		return value > t, true
+	case "below":
+		return value < t, true
+	case "below_or_equal":
+		return value <= t, true
+	case "equal":
+		return value == t, true
+	case "not_equal":
+		return value != t, true
+	case "between":
+		return value >= t && value <= upper, hasUpper
+	case "not_between":
+		return value < t || value > upper, hasUpper
+	}
+	return false, false
+}
+
+// GroupBy are the SQL expressions a tile groups by, one per key: the key's value on the point,
+// else on its resource, as LabelsWhere matches a label. kubeletstats and k8scluster put every
+// identity on the resource and leave the point empty, so a point-only group would put every
+// series in one group named "".
+//
+// They hold no `[` and no `=`: HyperDX names a group's column after its expression and looks the
+// value up by that name, and ClickHouse names a column `m['k']` "arrayElement(m, 'k')" and `a = b`
+// "equals(a, b)", so a group written with either comes back null (see compare.RowGroup). Hence
+// arrayElement, notEmpty and if.
+func GroupBy(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		key := sqlString(k)
+		out[i] = fmt.Sprintf("if(notEmpty(arrayElement(Attributes, %s)), arrayElement(Attributes, %s), arrayElement(ResourceAttributes, %s))", key, key, key)
+	}
+	return out
 }
 
 // LabelsWhere is the SQL filter keeping the metric points that carry labels, on the point or on its

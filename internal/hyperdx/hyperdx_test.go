@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/golden"
@@ -263,4 +264,52 @@ func TestATileCarriesItsMetricSelect(t *testing.T) {
 	eq(t, "source drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-1"}, sel), true)
 	_, _, found, _ = c.TileSelect(ctx, "nope")
 	eq(t, "gone", found, false)
+}
+
+func TestGroupBucketsReadEachSeriesIntervalInTheRange(t *testing.T) {
+	c, api := client(t)
+	start := time.Date(2026, 11, 8, 15, 35, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	ms := func(m int) int64 { return start.Add(time.Duration(m) * time.Minute).UnixMilli() }
+	api.SetSeries([]any{
+		map[string]any{"ts_bucket": ms(0), "group": []any{"ns", "a"}, "series_0.data": 0},
+		map[string]any{"ts_bucket": ms(1), "group": []any{"ns", "a"}, "series_0.data": "1"},
+		map[string]any{"ts_bucket": ms(2), "group": []any{"ns", nil}, "series_0.data": nil},
+		map[string]any{"ts_bucket": ms(3), "group": []any{"ns", "b"}, "series_0.data": "nan"},
+		map[string]any{"ts_bucket": ms(5), "group": []any{"ns", "a"}, "series_0.data": 1}, // the interval under way
+		map[string]any{"ts_bucket": ms(-1), "group": []any{"ns", "a"}, "series_0.data": 1},
+	})
+	sel := hyperdx.Select{AggFn: "quantile", Level: 0.95, Where: "w", MetricName: "m", MetricType: "gauge", GroupBy: []string{"g1", "g2"}}
+	got, err := c.GroupBuckets(ctx, map[string]any{"id": "src-m"}, sel, "1m", start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "buckets", got, []hyperdx.Bucket{
+		{Start: start, Group: []string{"ns", "a"}, Value: 0, Has: true},
+		{Start: start.Add(time.Minute), Group: []string{"ns", "a"}, Value: 1, Has: true},
+		{Start: start.Add(2 * time.Minute), Group: []string{"ns", ""}},
+		{Start: start.Add(3 * time.Minute), Group: []string{"ns", "b"}},
+	})
+	body := api.SeriesRequests()[0]
+	eq(t, "range", []any{body["startTime"], body["endTime"], body["granularity"]}, []any{float64(start.UnixMilli()), float64(end.UnixMilli()), "1m"})
+	eq(t, "series", body["series"], []any{map[string]any{"sourceId": "src-m", "aggFn": "quantile", "level": 0.95, "where": "w",
+		"whereLanguage": "sql", "metricName": "m", "metricDataType": "gauge", "groupBy": []any{"g1", "g2"}}})
+
+	api.SetSeries([]any{map[string]any{"group": []any{"x"}, "series_0.data": 1}})
+	if _, err := c.GroupBuckets(ctx, map[string]any{"id": "src-m"}, sel, "1m", start, end); err == nil {
+		t.Error("a bucket without ts_bucket was read")
+	}
+}
+
+func TestTileSelectReadsTheGroupBy(t *testing.T) {
+	c, _ := client(t)
+	sel := hyperdx.Select{AggFn: "max", MetricName: "m", MetricType: "gauge", GroupBy: []string{"a", "b"}}
+	dash, _, _ := c.EnsureTile(ctx, "krateo-alert-g", map[string]any{"id": "src-m"}, sel, nil)
+	live, src, found, err := c.TileSelect(ctx, dash)
+	eq(t, "read", []any{live.GroupBy, src, found, err}, []any{"a, b", "src-m", true, nil})
+	eq(t, "no drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), false)
+	sel.GroupBy = []string{"a"}
+	eq(t, "drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), true)
+	sel.GroupBy = nil
+	eq(t, "ungrouped drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), true)
 }

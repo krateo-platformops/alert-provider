@@ -63,6 +63,39 @@ An Alert reads rows or a metric. A row Alert's `where` (and `value`) read the so
 - Changing `source` with the same `where` rewrites the dashboard tile in place and keeps the
   HyperDX alert.
 
+## Grouped alerts
+
+A metric Alert with `spec.groupBy` is evaluated per series: one series per distinct tuple of the
+keys' values, and HyperDX alerts on each on its own. Without it, an aggregation over every series
+lets a healthy one mask an unhealthy one (`max` of a readiness gauge is 1 while one container is 0).
+
+- Each key is read off the point, or off its resource when the point lacks it, as `labels` match:
+  the tile's `config.groupBy` holds, per key, `if(notEmpty(arrayElement(Attributes, 'k')),
+  arrayElement(Attributes, 'k'), arrayElement(ResourceAttributes, 'k'))`, comma-separated. No `[`
+  and no `=`: HyperDX looks a group's value up by its column name, and ClickHouse names those
+  columns `arrayElement(...)` and `equals(...)`, so either would come back null.
+- The tile stays a line chart: the v2 API takes no groupBy on a number tile. Adding, changing or
+  removing `groupBy` rewrites the tile in place and keeps the HyperDX alert.
+- Admission refuses `groupBy` without `metricRef`, with `ratio`, and with more than 5 keys, a
+  duplicate key, or a key that is not an attribute name.
+- The pushed message ends with `\nGroup: {{{group}}}`: HyperDX fills it with the firing series
+  (triple braces, since it HTML-escapes double). `spec.message` stays as written, and the line is
+  no drift.
+- `spec.consecutiveWindows` (1 to 60, 1 when omitted) is pushed as HyperDX's
+  `numConsecutiveWindows`, on any Alert; HyperDX counts it per group.
+
+HyperDX's semantics, as of 2.35.0:
+
+- A gauge's value in one interval is each series' last sample in it; `aggregation` then combines the
+  series that share a group. With a key that identifies one series (a container), `max` and `min`
+  agree.
+- A group breaching for fewer than `consecutiveWindows` intervals is PENDING and notifies nothing;
+  one interval within the threshold resolves it (and notifies, if it had fired).
+- An interval with no data is skipped, and a skip restarts the count.
+- The alert's state is a roll-up, ALERT while any group is. A series that stops reporting (its pod
+  deleted) is never resolved: its last state stays. The v2 API exposes only the roll-up, so the
+  provider computes `status.groups` itself (see [Alert status](#alert-status)).
+
 ## Alert identity
 
 One `Alert` CR is one HyperDX alert and its own incidents, keyed on the CR's namespace and `metadata.name`.
@@ -210,3 +243,17 @@ already being analyzed, and a `Resolved` or `Closed` one is over.
 The reconciler mirrors the HyperDX alert's `state` onto `status.state` every cycle, and writes
 `status.okSince` in the same patch: the time the alert last turned OK, kept while it stays OK and
 unset in any other state. It is for display ("OK for 13 min") and never closes anything.
+
+A grouped Alert's `status.groups` lists its series that are ALERT, computed by the provider each
+pass, since HyperDX's API carries only the roll-up and never resolves a series that is gone. The
+pass queries `/api/v2/charts/series` with the tile's select and groupBy, at the Alert's interval,
+over the last `consecutiveWindows` completed intervals (aligned as HyperDX aligns its buckets; the
+interval under way is not one). A series is listed only when each of those intervals has a value
+that breaches the threshold, compared as HyperDX's `doesExceedThreshold` compares; a missing
+interval is no breach, as in HyperDX. Each entry is `{group: {<key>: <value>}, value: <last
+interval's value>, since: <RFC 3339>}`, `since` kept from the previous pass for a series already
+listed and otherwise the start of the window. A series that recovers or disappears drops out. The
+list is sorted by group and holds at most 50 entries; `status.groupsTruncated` counts the rest. A
+failed query leaves `status.groups` as it was and is the pass's error (in the `Synced` condition;
+an HTTP error leaves `status.phase`, any other sets `Error`); a pass with a push reads the groups
+after pushing, so a failed read never holds a push back.

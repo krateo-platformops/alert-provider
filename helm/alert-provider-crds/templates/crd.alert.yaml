@@ -69,6 +69,10 @@ spec:
                   message: "source names the rows where reads (logs or traces); a metric alert (metricRef) reads its metric"
                 - rule: "!has(self.source) || self.source != 'traces' || self.where != ''"
                   message: "a traces alert needs a where: counting every span measures traffic, not a fault"
+                - rule: "!has(self.groupBy) || has(self.metricRef)"
+                  message: "groupBy splits a metric's series; it requires metricRef"
+                - rule: "!has(self.groupBy) || !has(self.ratio)"
+                  message: "groupBy and ratio are mutually exclusive: a grouped ratio would need both its totals grouped alike"
               properties:
                 displayName:
                   type: string
@@ -191,7 +195,37 @@ spec:
                     (required with them, refused otherwise); at least threshold.
                 message:
                   type: string
-                  description: Notification message (markdown).
+                  description: >
+                    Notification message (markdown). With groupBy, the message pushed to HyperDX
+                    ends with a line "Group: " and HyperDX's group template variable, which it fills
+                    with the firing series; this field keeps what was written.
+                groupBy:
+                  type: array
+                  minItems: 1
+                  maxItems: 5
+                  x-kubernetes-list-type: set
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 256
+                    pattern: '^[A-Za-z0-9_./-]+$'
+                  description: >
+                    Evaluate one series per distinct value of these attribute keys, e.g.
+                    [k8s.namespace.name, k8s.pod.name, k8s.container.name]: one unhealthy container
+                    fires however many healthy ones there are. Each key is read off the metric
+                    point, or off its resource when the point lacks it, as labels match. HyperDX
+                    evaluates each series on its own, counts consecutiveWindows per series, and
+                    resolves a series on one interval within the threshold; a series that stops
+                    reporting is never resolved by HyperDX, so status.groups (computed by the
+                    provider) is the per-series truth. Metric alerts only; refused with ratio.
+                consecutiveWindows:
+                  type: integer
+                  minimum: 1
+                  maximum: 60
+                  description: >
+                    Fire only once the condition has held for this many consecutive intervals (1
+                    when omitted); HyperDX counts them per group with groupBy. An interval with no
+                    data restarts the count, and one interval within the threshold resolves.
             status:
               type: object
               properties:
@@ -237,3 +271,32 @@ spec:
                     NOT match this CR) / Error.
                 error:
                   type: string
+                groups:
+                  type: array
+                  description: >
+                    With groupBy: the series that are ALERT, computed by the provider each pass from
+                    the last consecutiveWindows completed intervals (a series is listed only when
+                    every one of them has a value that breaches the threshold). A series that
+                    recovers or stops reporting drops out. Sorted by group; at most 50, the rest
+                    counted in groupsTruncated. Left as it was when the query fails.
+                  items:
+                    type: object
+                    required: [group, value, since]
+                    properties:
+                      group:
+                        type: object
+                        additionalProperties:
+                          type: string
+                        description: The series' value of each groupBy key.
+                      value:
+                        type: number
+                        description: The series' value in the last completed interval.
+                      since:
+                        type: string
+                        format: date-time
+                        description: >
+                          When the series started breaching: the start of the earliest breaching
+                          interval, kept while the series stays listed.
+                groupsTruncated:
+                  type: integer
+                  description: ALERT series left out of groups past its 50 entries.
