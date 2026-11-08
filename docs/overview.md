@@ -99,6 +99,18 @@ HyperDX's semantics, as of 2.35.0:
 - `status.groups` is judged one interval late: the newest completed interval may not be ingested
   yet, and judging it would drop a breaching series for a pass and list it again on the next. So
   `status.groups` may trail HyperDX's own state by one interval, on purpose.
+- HyperDX judges an interval the moment it closes (about half a second after), with no delay for
+  ingestion, and 2.35 has none to configure (`scheduleOffsetMinutes` only shifts the alignment and
+  must be shorter than the interval). So **the metric must be sampled more often than the
+  interval**, or the interval's only point is still in flight and HyperDX sees no data. With a
+  `below` threshold that empty interval breaches (0 is below), and HyperDX fires one alert with no
+  group (`group: ""`, no `Group:` line) every interval. Seen live: `k8s.container.ready` from
+  `k8sclusterreceiver` at its 60 s default stamps every point at second :59, ingested a few seconds
+  later, so a `1m` alert on it read nothing in every interval. At a 30 s collection interval each
+  minute holds a mid-minute point by the time HyperDX looks. `status.groups` is unaffected, since it
+  is judged one interval late.
+- For the same reason, a `below` metric alert fires, ungrouped, whenever its metric stops arriving
+  (a collector down): it reads as a breach, not as missing data.
 
 ## Alert identity
 
