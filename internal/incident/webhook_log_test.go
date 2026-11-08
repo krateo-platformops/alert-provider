@@ -23,14 +23,14 @@ func logged(payload map[string]any) []string {
 }
 
 // What HyperDX 2.35 renders into {{body}} for a grouped tile alert: its own quoted group line, the
-// value, the time range, then the Alert's message with the provider's group line.
+// value, the time range, then the Alert's message.
 const (
 	readyGroup = "if(notEmpty(arrayElement(Attributes, 'k8s.pod.name')), arrayElement(Attributes, 'k8s.pod.name'), " +
 		"arrayElement(ResourceAttributes, 'k8s.pod.name')):snowplow-5c4954d6fc-s5rvj"
 	firingBody = `Group: "` + readyGroup + `"` + "\n0 falls below 1\nTime Range (UTC): [Nov 8 3:35:00 PM - Nov 8 3:40:00 PM)\n" +
-		"A container is not ready.\nGroup: " + readyGroup
+		"A container is not ready."
 	resolvedBody = `Group: "` + readyGroup + `" - The alert has been resolved.` + "\nTime Range (UTC): [Nov 8 3:40:00 PM - Nov 8 3:41:00 PM)\n" +
-		"A container is not ready.\nGroup: " + readyGroup
+		"A container is not ready."
 )
 
 func TestAGroupedNotificationLogsItsGroupLineAndEventID(t *testing.T) {
@@ -55,7 +55,10 @@ func TestGroupReadsTheFirstGroupLine(t *testing.T) {
 	for _, c := range []struct{ body, want string }{
 		{firingBody, readyGroup},
 		{resolvedBody, readyGroup},
-		{"A container is not ready.\nGroup: ns:a, pod:b", "ns:a, pod:b"}, // only the provider's line
+		// A message's own unquoted line does not shadow HyperDX's quoted one, even before it.
+		{"Group: mine\n" + firingBody, readyGroup},
+		{"Group: mine\n" + resolvedBody, readyGroup},
+		{"A container is not ready.\nGroup: ns:a, pod:b", "ns:a, pod:b"}, // only an unquoted line: tolerated
 		{"no group here\nGrouping: x", ""},
 		{"", ""},
 	} {

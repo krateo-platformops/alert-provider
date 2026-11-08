@@ -290,7 +290,7 @@ func fields(home string, a *v1alpha1.Alert) hyperdx.AlertFields {
 	spec := a.Spec
 	f := hyperdx.AlertFields{Interval: spec.Interval, Threshold: threshold(spec),
 		ThresholdType: spec.ThresholdType, Message: spec.Message,
-		ConsecutiveWindows: a.Windows(), Grouped: a.Grouped()}
+		ConsecutiveWindows: a.Windows()}
 	if spec.ThresholdMax != "" {
 		f.ThresholdMax = spec.ThresholdMax
 	}

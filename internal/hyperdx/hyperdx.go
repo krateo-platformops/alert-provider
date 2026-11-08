@@ -33,7 +33,8 @@ import (
 // notification: the reconcile fires alerts.
 //
 // {{body}} is the rendered notification: for a grouped tile alert it opens with HyperDX's own
-// `Group: "<group>"` line, and the message follows (see GroupLine). {{eventId}} is a hash of the
+// `Group: "<group>"` line (template.ts: {{#if group}}Group: "{{{group}}}"{{/if}}), on a firing and
+// a resolve alike, and the alert's message follows it. {{eventId}} is a hash of the
 // alert, the channel and the group. The body is safe inside a JSON string: HyperDX 2.35 compiles a
 // generic webhook body with noEscape but passes body, title and link through escapeJsonString
 // (tasks/checkAlerts/template.ts).
@@ -581,13 +582,7 @@ type AlertFields struct {
 	// ConsecutiveWindows is HyperDX's numConsecutiveWindows, counted per group; 0 or 1 is one
 	// window, HyperDX's default, and is not sent.
 	ConsecutiveWindows int
-	// Grouped says the tile evaluates one series per group: the message then names the group.
-	Grouped bool
 }
-
-// GroupLine ends the message of a grouped alert. HyperDX fills {{{group}}} with the firing series
-// (its groupBy columns and values); the triple braces keep it from HTML-escaping them.
-const GroupLine = "\nGroup: {{{group}}}"
 
 // mutable are the alert fields a CR may change after creation.
 var mutable = []string{"interval", "threshold", "thresholdType", "thresholdMax", "message", "numConsecutiveWindows"}
@@ -609,9 +604,6 @@ func alertBody(name, dashboardID, tileID, webhookID string, f AlertFields) map[s
 		"thresholdType": f.ThresholdType,
 		"channel":       map[string]any{"type": "webhook", "webhookId": webhookID},
 		"message":       message,
-	}
-	if f.Grouped {
-		b["message"] = message + GroupLine
 	}
 	if f.ThresholdMax != nil {
 		b["thresholdMax"] = f.ThresholdMax

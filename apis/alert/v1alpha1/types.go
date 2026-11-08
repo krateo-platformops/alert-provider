@@ -118,8 +118,8 @@ type AlertSpec struct {
 	// not_between (value in [threshold, thresholdMax], or outside it) and refused with any other.
 	ThresholdMax json.Number `json:"thresholdMax,omitempty"`
 
-	// Message is the notification message. With GroupBy, the message pushed to HyperDX ends with
-	// a line naming the group; Message itself stays as written.
+	// Message is the notification message. With GroupBy, HyperDX's notification already opens
+	// with a line naming the firing group, so the message is pushed as written.
 	Message string `json:"message,omitempty"`
 
 	// GroupBy splits a metric Alert into one series per distinct value of these attribute keys,

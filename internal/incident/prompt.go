@@ -72,10 +72,12 @@ func Process(log logging.Logger, payload any) {
 	log.Info(line + ": the reconciler evaluates it on its next pass")
 }
 
-// Group is the series a notification body names, "" when it names none: the first line that starts
-// with "Group: ". HyperDX opens a grouped alert's body with `Group: "<group>"` (followed by " - The
-// alert has been resolved." on a resolve); the message's own line (hyperdx.GroupLine) is unquoted.
+// Group is the series a notification body names, "" when it names none. HyperDX 2.35 opens a
+// grouped alert's body with `Group: "<group>"` (followed by " - The alert has been resolved." on a
+// resolve), so the first such quoted line is the group. A body without one falls back to the first
+// unquoted "Group: " line, e.g. one a message writes itself.
 func Group(body string) string {
+	unquoted := ""
 	for _, l := range strings.Split(body, "\n") {
 		rest, ok := strings.CutPrefix(strings.TrimSpace(l), "Group: ")
 		if !ok {
@@ -86,7 +88,9 @@ func Group(body string) string {
 				return rest[1:end]
 			}
 		}
-		return strings.TrimSpace(rest)
+		if unquoted == "" {
+			unquoted = strings.TrimSpace(rest)
+		}
 	}
-	return ""
+	return unquoted
 }

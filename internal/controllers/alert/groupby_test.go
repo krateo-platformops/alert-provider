@@ -114,11 +114,11 @@ func TestAGroupedAlertTileGroupsEachKeyOnThePointOrItsResource(t *testing.T) {
 	eq(t, "select", tile["select"], []any{map[string]any{"aggFn": "max", "metricName": "k8s.container.ready",
 		"metricType": "gauge", "valueExpression": "Value", "where": "", "whereLanguage": "sql"}})
 	eq(t, "numConsecutiveWindows", live["numConsecutiveWindows"], 5)
-	eq(t, "message", live["message"], "A container is not ready.\nGroup: {{{group}}}")
-	eq(t, "spec.message", h.get(notReady).Spec.Message, "A container is not ready.")
+	// HyperDX's body opens with its own group line: the message is pushed as written.
+	eq(t, "message", live["message"], "A container is not ready.")
 	eq(t, "phase", h.status(notReady).Phase, "Synced")
 
-	// It converges: the group line and the windows are no drift.
+	// It converges: the windows are no drift.
 	h.api.ClearWrites()
 	h.pass(3)
 	eq(t, "writes", nonWebhookWrites(h.api), []hyperdxtest.Write{})
@@ -141,7 +141,7 @@ func TestAChangedGroupByRewritesTheTileInPlace(t *testing.T) {
 	eq(t, "same alert", live["id"], before["id"])
 	eq(t, "same tile", live["tileId"], before["tileId"])
 
-	// Ungrouped, the tile carries no groupBy and the message no group line.
+	// Ungrouped, the tile carries no groupBy; the message is the same.
 	h.edit(notReady, func(a *v1alpha1.Alert) { a.Spec.GroupBy = nil })
 	h.pass(1)
 	live = h.byName()[notReady]

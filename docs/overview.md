@@ -78,10 +78,10 @@ lets a healthy one mask an unhealthy one (`max` of a readiness gauge is 1 while 
   removing `groupBy` rewrites the tile in place and keeps the HyperDX alert.
 - Admission refuses `groupBy` without `metricRef`, with `ratio`, and with more than 5 keys, a
   duplicate key, or a key that is not an attribute name.
-- The pushed message ends with `\nGroup: {{{group}}}`: HyperDX fills it with the firing series
-  (triple braces, since it HTML-escapes double). HyperDX 2.35 also opens a grouped tile alert's
-  notification body with its own `Group: "<group>"` line; the webhook log reads that first one. `spec.message` stays as written, and the line is
-  no drift.
+- The notification names the group without help: HyperDX 2.35 opens a grouped tile alert's
+  notification body with its own `Group: "<group>"` line (`{{#if group}}Group: "{{{group}}}"{{/if}}`),
+  on a firing and a resolve alike, and the Alert's message follows it. The message is pushed
+  exactly as `spec.message`; the webhook log reads HyperDX's line.
 - `spec.consecutiveWindows` (1 to 60, 1 when omitted) is pushed as HyperDX's
   `numConsecutiveWindows`, on any Alert; HyperDX counts it per group.
 
@@ -117,9 +117,9 @@ One `Alert` CR is one HyperDX alert and its own incidents, keyed on the CR's nam
   place (PUT, same id), so an install converges without recreating any alert.
 - The provider only logs a notification, one line, e.g. `[webhook] '🚨 sre-pod-not-ready' ALERT
   group="<column>:<value>, …" eventId=<hash>: the reconciler evaluates it on its next pass`. Of
-  the body it logs only the group line of a grouped alert (`group=…`, the first `Group:` line),
-  never the rest, which can quote the records an alert counted; an ungrouped alert's line has no
-  `group=`.
+  the body it logs only the group line of a grouped alert (`group=…`: HyperDX's quoted
+  `Group: "…"` line, else the first unquoted `Group:` line), never the rest, which can quote the
+  records an alert counted; an ungrouped alert's line has no `group=`.
 - A firing is the CR the reconciler just mirrored, so it is never matched to an `Alert` by name.
 - Its incidents carry the label `observability.krateo.io/alert: <metadata.name>` and
   `spec.alertRef {name, namespace}`. A name over 63 characters cannot be a label value, so such an
