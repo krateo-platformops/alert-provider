@@ -95,6 +95,9 @@ HyperDX's semantics, as of 2.35.0:
 - The alert's state is a roll-up, ALERT while any group is. A series that stops reporting (its pod
   deleted) is never resolved: its last state stays. The v2 API exposes only the roll-up, so the
   provider computes `status.groups` itself (see [Alert status](#alert-status)).
+- `status.groups` is judged one interval late: the newest completed interval may not be ingested
+  yet, and judging it would drop a breaching series for a pass and list it again on the next. So
+  `status.groups` may trail HyperDX's own state by one interval, on purpose.
 
 ## Alert identity
 
@@ -247,8 +250,11 @@ unset in any other state. It is for display ("OK for 13 min") and never closes a
 A grouped Alert's `status.groups` lists its series that are ALERT, computed by the provider each
 pass, since HyperDX's API carries only the roll-up and never resolves a series that is gone. The
 pass queries `/api/v2/charts/series` with the tile's select and groupBy, at the Alert's interval,
-over the last `consecutiveWindows` completed intervals (aligned as HyperDX aligns its buckets; the
-interval under way is not one). A series is listed only when each of those intervals has a value
+over `consecutiveWindows` completed intervals aligned as HyperDX aligns its buckets, judged one
+interval late: the window ends at the start of the newest completed interval, which may not be
+ingested yet (with `1m` and 5, at 12:07:30 it reads 12:01 to 12:05 and leaves 12:06 out). The
+list may therefore trail HyperDX's state by one interval, on purpose, and never flaps on a minute
+still being ingested. A series is listed only when each of those intervals has a value
 that breaches the threshold, compared as HyperDX's `doesExceedThreshold` compares; a missing
 interval is no breach, as in HyperDX. Each entry is `{group: {<key>: <value>}, value: <last
 interval's value>, since: <RFC 3339>}`, `since` kept from the previous pass for a series already

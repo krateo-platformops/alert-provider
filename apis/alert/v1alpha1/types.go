@@ -165,8 +165,9 @@ type AlertStatus struct {
 	Phase string `json:"phase,omitempty"`
 
 	// Groups are the series of a grouped Alert (spec.groupBy) that are ALERT, computed by the
-	// provider each pass: HyperDX's API carries only the rolled-up state. Sorted by group; at most
-	// MaxGroups.
+	// provider each pass: HyperDX's API carries only the rolled-up state. They are judged one
+	// interval late, since the newest completed interval may not be ingested yet, so they may trail
+	// HyperDX's state by one interval. Sorted by group; at most MaxGroups.
 	Groups []AlertGroup `json:"groups,omitempty"`
 
 	// GroupsTruncated counts the ALERT groups left out of Groups past MaxGroups.

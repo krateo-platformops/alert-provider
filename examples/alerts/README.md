@@ -127,4 +127,5 @@ status:
     since: "2026-11-08T15:35:00Z"
 ```
 
-A series drops out of `status.groups` once it is ready again or gone.
+A series drops out of `status.groups` once it is ready again or gone. It is judged one interval
+late (the newest minute may not be ingested yet), so it can trail HyperDX's own state by a minute.

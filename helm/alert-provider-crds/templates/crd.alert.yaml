@@ -275,9 +275,11 @@ spec:
                   type: array
                   description: >
                     With groupBy: the series that are ALERT, computed by the provider each pass from
-                    the last consecutiveWindows completed intervals (a series is listed only when
-                    every one of them has a value that breaches the threshold). A series that
-                    recovers or stops reporting drops out. Sorted by group; at most 50, the rest
+                    consecutiveWindows completed intervals judged one interval late: the newest
+                    completed interval may not be ingested yet, so it is left out, and this list may
+                    trail HyperDX's own state by one interval, on purpose. A series is listed only
+                    when every one of those intervals has a value that breaches the threshold. A
+                    series that recovers or stops reporting drops out. Sorted by group; at most 50, the rest
                     counted in groupsTruncated. Left as it was when the query fails.
                   items:
                     type: object

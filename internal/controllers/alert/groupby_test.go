@@ -58,15 +58,18 @@ func at(t *testing.T, now time.Time) {
 	t.Cleanup(func() { clock = saved })
 }
 
-// minute is the start of the minute i minutes before the one t0 falls in: minute(1) is the last
-// completed one.
-func minute(i int) time.Time { return t0.Truncate(time.Minute).Add(-time.Duration(i) * time.Minute) }
+// minute is the start of the minute i minutes before the window's end at t0, judged one minute
+// late: minute(1) is the newest minute judged, minute(0) the newest completed one, left out since
+// it may not be ingested yet.
+func minute(i int) time.Time {
+	return t0.Truncate(time.Minute).Add(-time.Duration(i+1) * time.Minute)
+}
 
 // pod is a series of the fixture: a container of a pod in krateo-system.
 type pod struct{ name, container string }
 
-// readings are charts/series buckets of p, one per value, oldest first, ending in the last
-// completed minute; a nil value is a bucket whose value is null.
+// readings are charts/series buckets of p, one per value, oldest first, ending in the newest
+// minute judged (minute(1)); a nil value is a bucket whose value is null.
 func (p pod) readings(values ...any) []any {
 	var out []any
 	for i, v := range values {
@@ -212,6 +215,29 @@ func TestAlertDriftComparesConsecutiveWindows(t *testing.T) {
 
 // --- status.groups ---
 
+func TestTheWindowIsJudgedOneIntervalLate(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 7, 30, 0, time.UTC)
+	start, end := Window(now, time.Minute, 5)
+	eq(t, "1m x 5 at 12:07:30", []string{start.Format("15:04"), end.Format("15:04")}, []string{"12:01", "12:06"})
+	start, end = Window(time.Date(2026, 11, 8, 12, 15, 0, 0, time.UTC), 5*time.Minute, 2)
+	eq(t, "5m x 2 at 12:15:00", []string{start.Format("15:04"), end.Format("15:04")}, []string{"12:00", "12:10"})
+}
+
+// The newest completed minute may not be ingested yet: missing for every group, it changes nothing.
+func TestTheNewestCompletedBucketMissingKeepsTheGroupsListed(t *testing.T) {
+	h := readinessHarness(t, t0)
+	h.api.SetSeries(replies(seal.readings(0, 0, 0, 0, 0), snowplow.readings(0, 0, 0, 0, 0)))
+	h.pass(2)
+	want := []v1alpha1.AlertGroup{
+		{Group: seal.group(), Value: "0", Since: minute(5).Format(time.RFC3339)},
+		{Group: snowplow.group(), Value: "0", Since: minute(5).Format(time.RFC3339)}}
+	eq(t, "listed", h.status(notReady).Groups, want)
+	// A pass later, in the same minute: still no bucket for minute(0) from either group.
+	at(t, t0.Add(20*time.Second))
+	h.pass(1)
+	eq(t, "still listed", h.status(notReady).Groups, want)
+}
+
 func TestTheGroupsQueryIsTheTileSelectOverTheLastCompletedWindows(t *testing.T) {
 	h := readinessHarness(t, t0)
 	h.pass(2)
@@ -306,7 +332,7 @@ func TestAHealthyGroupDoesNotMaskAnUnhealthyOne(t *testing.T) {
 }
 
 // A row of the same group and bucket that is OK does not hide one that breaches, as HyperDX keeps
-// a bucket's worst case; and a bucket the reply places in the minute under way is not counted.
+// a bucket's worst case; and a bucket past the window is not counted.
 func TestABucketKeepsItsWorstRowAndTheCurrentMinuteIsIgnored(t *testing.T) {
 	start := minute(5)
 	var buckets []hyperdx.Bucket

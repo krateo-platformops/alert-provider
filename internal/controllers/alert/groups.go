@@ -20,12 +20,15 @@ var clock = time.Now
 var intervals = map[string]time.Duration{"1m": time.Minute, "5m": 5 * time.Minute, "15m": 15 * time.Minute,
 	"30m": 30 * time.Minute, "1h": time.Hour, "6h": 6 * time.Hour, "12h": 12 * time.Hour, "1d": 24 * time.Hour}
 
-// Window is the range status.groups reads at now: the last n completed intervals, aligned to the
-// epoch as ClickHouse's toStartOfInterval aligns HyperDX's alert buckets. The interval now falls in
-// has only begun, so it is not one of them.
+// Window is the range status.groups reads at now: n completed intervals, aligned to the epoch as
+// ClickHouse's toStartOfInterval aligns HyperDX's alert buckets, judged one interval late. The
+// interval now falls in has only begun; the one before it has ended but may not be ingested yet,
+// and judging it would drop a breaching group for a pass, then list it again. So the window ends
+// at the start of that interval, and status.groups trails HyperDX's state by one interval, on
+// purpose. With 1m intervals and n 5, at 12:07:30 it is [12:01, 12:06).
 func Window(now time.Time, interval time.Duration, n int) (start, end time.Time) {
 	ms := interval.Milliseconds()
-	end = time.UnixMilli(now.UnixMilli() / ms * ms).UTC()
+	end = time.UnixMilli(now.UnixMilli()/ms*ms - ms).UTC()
 	return end.Add(-time.Duration(n) * interval), end
 }
 
