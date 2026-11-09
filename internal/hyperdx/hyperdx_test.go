@@ -279,7 +279,8 @@ func TestGroupBucketsReadEachSeriesIntervalInTheRange(t *testing.T) {
 		map[string]any{"ts_bucket": ms(5), "group": []any{"ns", "a"}, "series_0.data": 1}, // the interval under way
 		map[string]any{"ts_bucket": ms(-1), "group": []any{"ns", "a"}, "series_0.data": 1},
 	})
-	sel := hyperdx.Select{AggFn: "quantile", Level: 0.95, Where: "w", MetricName: "m", MetricType: "gauge", GroupBy: []string{"g1", "g2"}}
+	sel := hyperdx.Select{AggFn: "quantile", Level: 0.95, Where: "w", MetricName: "m", MetricType: "gauge",
+		GroupBy: []hyperdx.GroupKey{{Alias: "k1", Expr: "g1"}, {Alias: "k2", Expr: "g2"}}}
 	got, err := c.GroupBuckets(ctx, map[string]any{"id": "src-m"}, sel, "1m", start, end)
 	if err != nil {
 		t.Fatal(err)
@@ -303,15 +304,34 @@ func TestGroupBucketsReadEachSeriesIntervalInTheRange(t *testing.T) {
 
 func TestTileSelectReadsTheGroupBy(t *testing.T) {
 	c, _ := client(t)
-	sel := hyperdx.Select{AggFn: "max", MetricName: "m", MetricType: "gauge", GroupBy: []string{"a", "b"}}
+	sel := hyperdx.Select{AggFn: "max", MetricName: "m", MetricType: "gauge",
+		GroupBy: []hyperdx.GroupKey{{Alias: "k.a", Expr: "a"}, {Alias: "k.b", Expr: "b"}}}
 	dash, _, _ := c.EnsureTile(ctx, "krateo-alert-g", map[string]any{"id": "src-m"}, sel, nil)
 	live, src, found, err := c.TileSelect(ctx, dash)
-	eq(t, "read", []any{live.GroupBy, src, found, err}, []any{"a, b", "src-m", true, nil})
+	eq(t, "read", []any{live.GroupBy, src, found, err}, []any{"a AS `k.a`, b AS `k.b`", "src-m", true, nil})
 	eq(t, "no drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), false)
-	sel.GroupBy = []string{"a"}
+	// The same expressions unaliased, as 0.2.64 wrote them, are a drift.
+	unaliased := live
+	unaliased.GroupBy = "a, b"
+	eq(t, "unaliased drift", hyperdx.SelectDrift(unaliased, src, map[string]any{"id": "src-m"}, sel), true)
+	// Another alias is too.
+	sel.GroupBy[1].Alias = "k.c"
+	eq(t, "alias drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), true)
+	sel.GroupBy = sel.GroupBy[:1]
 	eq(t, "drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), true)
 	sel.GroupBy = nil
 	eq(t, "ungrouped drift", hyperdx.SelectDrift(live, src, map[string]any{"id": "src-m"}, sel), true)
+}
+
+// An alias is a quoted identifier that no name can close; the CRD admits neither a backtick nor a
+// backslash in a key, so this is the last line, not the first.
+func TestAGroupAliasIsAQuotedIdentifier(t *testing.T) {
+	c, _ := client(t)
+	sel := hyperdx.Select{AggFn: "max", MetricName: "m", MetricType: "gauge",
+		GroupBy: []hyperdx.GroupKey{{Alias: "a`b\\c", Expr: "e"}}}
+	dash, _, _ := c.EnsureTile(ctx, "krateo-alert-q", map[string]any{"id": "src-m"}, sel, nil)
+	live, _, _, _ := c.TileSelect(ctx, dash)
+	eq(t, "quoted", live.GroupBy, "e AS `a\\`b\\\\c`")
 }
 
 func TestTheWebhookBodyIsJSONCarryingTheNotificationBodyAndEventID(t *testing.T) {
