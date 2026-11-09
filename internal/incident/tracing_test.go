@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -152,5 +153,45 @@ func TestTheReanalysisRCAIsLinkedToTheReanalysis(t *testing.T) {
 	}
 	if attrOf(an, "incident.name") != incName || attrOf(re, "incident.reanalysis.count") != "1" {
 		t.Errorf("attributes: analyze %v, reanalyze %v", an.Attributes, re.Attributes)
+	}
+}
+
+// The incident span names are a contract with observability's tail sampler, which keeps whole any
+// trace holding a span named "incident.*". The names are spelled out here, not taken from the
+// constants, and checked on the spans the real paths emit: a first firing (fire, analyze), a
+// firing compared with an open incident (fire, compare), and a reanalysis (reanalyze, analyze).
+// MUTATION: renaming incident.fire to alert.fire fails this.
+func TestTheIncidentSpanNamesAreTheSamplerContract(t *testing.T) {
+	want := []string{"incident.fire", "incident.compare", "incident.analyze", "incident.reanalyze"}
+	rec := tracingtest.Install(t)
+
+	first := newCase(t)
+	first.fire(fireOpt{})
+
+	compared := newCase(t)
+	compared.analyzed("inc-1", "", "")
+	compared.match = "inc-1"
+	compared.fire(fireOpt{})
+
+	re := newCase(t)
+	re.analyzedIncident("Open")
+	re.kube.writeSpec(ns, incName, map[string]any{"reanalysis": map[string]any{"feedback": "f"}})
+	if err := re.reanalyze(); err != nil {
+		t.Fatal(err)
+	}
+
+	emitted := map[string]bool{}
+	for _, s := range rec.Spans() {
+		emitted[s.Name] = true
+	}
+	for _, name := range want {
+		if !emitted[name] {
+			t.Errorf("no span named %q; emitted %v", name, tracingtest.Names(rec.Spans()))
+		}
+	}
+	for name := range emitted {
+		if strings.HasPrefix(name, "incident.") && !slices.Contains(want, name) {
+			t.Errorf("span %q is new under the sampler's incident. prefix: add it to the contract", name)
+		}
 	}
 }

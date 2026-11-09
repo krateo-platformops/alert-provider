@@ -41,7 +41,8 @@ registers no tracer: the pod is what it was before tracing. With `otel.enabled: 
 Deployment gets `OTEL_ENABLED`, `OTEL_TRACING_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://$(HOST_IP):4318`
 (the node-local collector agent; `HOST_IP` is the `status.hostIP` fieldRef, declared first so it
 expands), `OTEL_TRACES_SAMPLER`, `OTEL_SERVICE_NAME` and `SERVICE_VERSION` (the image tag, recorded
-as `service.version`). The `hyperdx-key-bootstrap` Job gets none of them: its pod template is
+as `service.version`). An `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` set on the pod wins over the base
+URL and is used as-is; the base URL gets `/v1/traces`. The `hyperdx-key-bootstrap` Job gets none of them: its pod template is
 immutable within a release, so the switch must not change it.
 
 The spans, by trace:
@@ -59,6 +60,10 @@ The spans, by trace:
 | `incident.reanalyze` | internal | root, one per reanalysis request | `incident.namespace`, `incident.name`, `incident.reanalysis.count` |
 | `<METHOD> /webhook` | server | root, or the caller's `traceparent` | otelhttp's; no span for `GET /healthz` |
 | `HTTP GET`, `HTTP POST`, … | client | the action that made the call | otelhttp's; HyperDX, A2A, authn, the comparison model, the bootstrap session |
+
+The `incident.` span names are a contract: observability's tail sampler keeps whole every trace
+holding a span named `incident.*` and samples the routine Alert loop at about 5%, so a rename must
+be coordinated with observability (pinned by `TestTheIncidentSpanNamesAreTheSamplerContract`).
 
 A firing and a reanalysis outlive the reconcile that starts them (an RCA takes minutes), so they
 run under the process's context, not the reconcile's: the reconcile timeout never cuts them short
