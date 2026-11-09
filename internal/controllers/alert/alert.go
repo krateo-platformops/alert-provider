@@ -4,12 +4,17 @@
 // <namespace>/<name> in any other.
 //
 // Every poll interval each Alert is one pass: its spec is pushed to HyperDX, the live state
-// (OK/ALERT/PENDING) is mirrored to its status, and a pass that finds it ALERT is one firing. A
+// (OK/ALERT/PENDING) is mirrored to its status, and a pass that finds it ALERT is one firing. The
+// passes of one poll interval share one read of HyperDX's alerts list (alertsList). A
 // firing of a home-namespace Alert is handed to the incident writer off the reconcile, unless the
 // Alert is paused (krateo.io/paused: "true"). An Alert in any other namespace (a tenant's) never
 // reaches the writer: its state is mirrored and HyperDX notifies, with no Incident and no RCA,
 // since the incident agent reads the whole platform and its analysis could quote other tenants'
 // data. A finalizer removes the HyperDX alert and dashboard before the Alert is deleted.
+//
+// HyperDX rate-limits its API. A refusal (429) is reported to provider-runtime's rate-limit
+// governor, which defers every Alert's next calls until the time HyperDX asked for: the pass is
+// deferred, not failed.
 package alert
 
 import (
@@ -20,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -68,13 +74,23 @@ type Options struct {
 	FiringContext context.Context
 }
 
-// Setup adds the Alert controller to the manager.
+// MaxThrottle is the longest a HyperDX rate-limit refusal holds the Alerts back: a Retry-After
+// past it is cut to it (provider-runtime's MaxHold), so a misbehaving limiter can't stop the
+// mirroring, or the deletes, for an hour.
+const MaxThrottle = 10 * time.Minute
+
+// Setup adds the Alert controller to the manager. o.Controller.RateLimitGovernor must be set
+// (controller.Options.SetupRateLimitGovernor with RateLimit.Enabled): HyperDX's rate-limit
+// refusals are honoured through it.
 //
 // One Alert reconciles at a time: a recreated webhook resets every Alert, and a HyperDX alert two
 // Alerts claim is released by one of them, each of which assumes no other Alert is mid-push.
 func Setup(mgr ctrl.Manager, o Options) error {
 	if o.Namespace == "" {
 		return errors.New("the Alert controller needs its home namespace")
+	}
+	if o.Controller.RateLimitGovernor == nil {
+		return errors.New("the Alert controller needs provider-runtime's rate-limit governor: it defers the passes HyperDX rate-limits")
 	}
 	name := reconciler.ControllerName(v1alpha1.AlertGroupKind)
 	log := o.Controller.Logger.WithValues("controller", name)
@@ -87,12 +103,15 @@ func Setup(mgr ctrl.Manager, o Options) error {
 	f := &firings{home: o.Namespace, interval: o.Controller.PollInterval, fire: o.Writer.Fire, ctx: o.FiringContext,
 		hdx: o.HyperDX, log: log, last: map[types.UID]time.Time{}, run: func(f func()) { go f() }}
 	c := &connector{
-		home:    o.Namespace,
-		kube:    mgr.GetClient(),
-		hdx:     o.HyperDX,
-		webhook: &webhook{kube: mgr.GetClient(), name: o.WebhookName, target: o.WebhookTarget, ttl: o.Controller.PollInterval, log: log},
-		firings: f,
-		log:     log,
+		home:     o.Namespace,
+		kube:     mgr.GetClient(),
+		hdx:      o.HyperDX,
+		key:      o.HyperDX().RateLimitKey(),
+		interval: o.Controller.PollInterval,
+		alerts:   newAlertsList(o.Controller.PollInterval),
+		webhook:  &webhook{kube: mgr.GetClient(), name: o.WebhookName, target: o.WebhookTarget, ttl: o.Controller.PollInterval, log: log},
+		firings:  f,
+		log:      log,
 	}
 	r := reconciler.NewReconciler(mgr,
 		resource.ManagedKind(v1alpha1.AlertGroupVersionKind),
@@ -106,6 +125,7 @@ func Setup(mgr ctrl.Manager, o Options) error {
 		// error is in the Synced condition, status.phase and the logs.
 		reconciler.WithThrottledRecorder(prevent.NewNopRecorder()),
 		reconciler.WithTimeout(o.Controller.Timeout),
+		reconciler.WithRateLimitGovernor(o.Controller.RateLimitGovernor),
 	)
 
 	opts := o.Controller.ForControllerRuntime()
@@ -139,26 +159,45 @@ var changed = predicate.Funcs{
 }
 
 type connector struct {
-	home    string // the home namespace, see HyperDXName
-	kube    client.Client
-	hdx     func() *hyperdx.Client
-	webhook *webhook
-	firings *firings
-	log     logging.Logger
+	home string // the home namespace, see HyperDXName
+	kube client.Client
+	hdx  func() *hyperdx.Client
+	// key is HyperDX's rate-limit key (RateLimitKey); interval the poll interval, the wait a
+	// refusal that names no time asks for.
+	key      string
+	interval time.Duration
+	alerts   *alertsList
+	webhook  *webhook
+	firings  *firings
+	log      logging.Logger
+}
+
+// RateLimitKey makes provider-runtime gate every pass's calls on HyperDX's rate limit
+// (reconciler.RateLimitKeyer): one key, the API's host, since every Alert reaches the one HyperDX
+// with the one access key.
+func (c *connector) RateLimitKey(resource.Managed) (string, error) {
+	return c.key, nil
 }
 
 // Connect opens a pass: a new HyperDX client, so the pass reads the dashboards afresh, and the
-// HyperDX sources and shared webhook every alert uses.
+// HyperDX sources and shared webhook every alert uses. The client drops the shared alerts list on
+// every write it makes to the alerts or dashboards.
 func (c *connector) Connect(ctx context.Context, mg resource.Managed) (reconciler.ExternalClient, error) {
 	a, ok := mg.(*v1alpha1.Alert)
 	if !ok {
 		return nil, errNotAlert
 	}
-	e := &external{home: c.home, kube: c.kube, hdx: c.hdx(), firings: c.firings, log: c.log.WithValues("alert", a.Namespace+"/"+a.Name)}
+	hdx := c.hdx()
+	hdx.OnWrite, hdx.ThrottleDefault = c.alerts.invalidate, c.interval
+	e := &external{home: c.home, kube: c.kube, hdx: hdx, alerts: c.alerts, firings: c.firings, log: c.log.WithValues("alert", a.Namespace+"/"+a.Name)}
 	if meta.WasDeleted(a) {
 		return e, nil // removing the HyperDX objects needs neither
 	}
 	sources, webhookID, err := c.webhook.ensure(ctx, e.hdx, a)
+	if _, throttled := httpx.Throttled(err); throttled {
+		e.throttled = err // Observe defers the pass
+		return e, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +207,8 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (reconcile
 
 // plan is what Observe found for Update to act on. A new external serves each reconcile.
 type plan struct {
+	// throttled is HyperDX's rate-limit refusal that cut Observe short; nothing is pushed.
+	throttled error
 	// invalid is why the threshold is refused; nothing is pushed.
 	invalid string
 	// deleteShared is a HyperDX alert several Alerts claimed and none is named after: it is
@@ -203,6 +244,8 @@ type external struct {
 	home      string
 	kube      client.Client
 	hdx       *hyperdx.Client
+	alerts    *alertsList
+	throttled error // Connect's calls were refused for the rate limit
 	firings   *firings
 	log       logging.Logger
 	sources   []map[string]any // HyperDX's, every kind
@@ -309,6 +352,28 @@ func fields(home string, a *v1alpha1.Alert) hyperdx.AlertFields {
 
 func now() string { return pyfmt.Isoformat(time.Now()) }
 
+// throttle is the observation of a pass HyperDX refused for its rate limit (a 429), and false for
+// any other error. The refusal is already reported to provider-runtime's governor (hyperdx.Client
+// reports every response), which then holds HyperDX's key until the time it asked for. So the pass
+// ends without an error: provider-runtime gates the Update this observation asks for, finds the
+// key held and defers it, writing Synced=False/ReconcileDeferred with the deadline and requeueing
+// after it with a nil error (provider-runtime v1.12.0 reconciler.go, the gate before Update, and
+// deferReconcile in ratelimit.go). The status and Ready are left as they are, as a deferral leaves
+// them: nothing was learnt.
+func (e *external) throttle(ctx context.Context, a *v1alpha1.Alert, err error) (reconciler.ExternalObservation, bool) {
+	wait, ok := httpx.Throttled(err)
+	if !ok {
+		return reconciler.ExternalObservation{}, false
+	}
+	e.plan = plan{throttled: err}
+	trace.SpanFromContext(ctx).SetAttributes(attrThrottled.Bool(true))
+	wait = min(wait, MaxThrottle)
+	e.log.Info(fmt.Sprintf("[reconciler] Alert %s: HyperDX is rate-limiting the provider (%d); the pass is deferred %s",
+		hyperdxName(e.home, a), httpx.Code(err), wait))
+	return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false,
+		Diff: "deferred: HyperDX rate-limited the pass"}, true
+}
+
 // failed records a failed pass. A HyperDX HTTP error leaves the status as it was; any other error
 // is phase Error.
 func failed(a *v1alpha1.Alert, err error) error {
@@ -349,6 +414,10 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 		a.SetConditions(prv1.Deleting())
 		return reconciler.ExternalObservation{ResourceExists: a.Status.HyperdxAlertID != "" || a.Status.HyperdxDashboardID != ""}, nil
 	}
+	if e.throttled != nil {
+		obs, _ := e.throttle(ctx, a, e.throttled)
+		return obs, nil
+	}
 
 	// A tautological threshold is refused, on an existing alert too: the comparison has one
 	// possible outcome, so the alert cannot signal anything. The existing alert is not deleted:
@@ -364,6 +433,9 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 		}
 	}
 	why, err := e.tile(ctx, a)
+	if obs, ok := e.throttle(ctx, a, err); ok {
+		return obs, nil
+	}
 	if err != nil {
 		return reconciler.ExternalObservation{}, failed(a, err)
 	}
@@ -371,7 +443,13 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 		return e.refuse(a, why), nil
 	}
 
-	live, err := e.hdx.ListAlerts(ctx)
+	// The list the passes of this poll interval share: at most one interval old, and never older
+	// than this process's last write to HyperDX's alerts or dashboards.
+	live, cached, err := e.alerts.get(ctx, e.hdx)
+	trace.SpanFromContext(ctx).SetAttributes(attrListCached.Bool(cached))
+	if obs, ok := e.throttle(ctx, a, err); ok {
+		return obs, nil
+	}
 	if err != nil {
 		return reconciler.ExternalObservation{}, failed(a, err)
 	}
@@ -440,6 +518,9 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 			live, liveSrc, found, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 			if err != nil {
 				e.firings.start(ctx, a, e.rows, st)
+				if obs, ok := e.throttle(ctx, a, err); ok {
+					return obs, nil
+				}
 				// Ready=Available above mirrors HyperDX's live state, read in this call; only the
 				// tile read failed, so it stands (provider-runtime v1.8.0).
 				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
@@ -449,6 +530,9 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 			liveWhere, found, err := e.hdx.TileWhere(ctx, e.plan.dashboardID)
 			if err != nil {
 				e.firings.start(ctx, a, e.rows, st)
+				if obs, ok := e.throttle(ctx, a, err); ok {
+					return obs, nil
+				}
 				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
 			}
 			e.plan.where = found && liveWhere != a.Spec.Where
@@ -479,6 +563,9 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 	// A pass with a push reads the groups after it (Update), so a failed read never holds a push
 	// back. The live state was read, so Ready stands on a failed one.
 	if err := e.groups(ctx, a); err != nil {
+		if obs, ok := e.throttle(ctx, a, err); ok {
+			return obs, nil
+		}
 		return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(err)
 	}
 	return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
@@ -550,6 +637,11 @@ func (e *external) update(ctx context.Context, mg resource.Managed) error {
 	a, ok := mg.(*v1alpha1.Alert)
 	if !ok {
 		return errNotAlert
+	}
+	// Reached only without a governor to defer the pass (see throttle): the refusal is then this
+	// pass's error, and nothing is pushed on a plan Observe never finished.
+	if err := e.plan.throttled; err != nil {
+		return err
 	}
 	if why := e.plan.invalid; why != "" {
 		a.Status.Phase, a.Status.Error = v1alpha1.PhaseInvalid, why

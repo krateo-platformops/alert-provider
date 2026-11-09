@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // StatusError is a 4xx or 5xx answer. Its message is the one Python's requests raised, which the
@@ -12,6 +13,12 @@ import (
 type StatusError struct {
 	Code int
 	URL  string
+	// Throttled means the server refused the call for its rate limit (a 429, or what
+	// provider-runtime's httpsignal reads as one); RetryAfter is then how long it asked the client
+	// to wait, or the caller's default when it named no time. Only a client that reads the
+	// rate-limit headers sets them.
+	Throttled  bool
+	RetryAfter time.Duration
 }
 
 func (e *StatusError) Error() string {
@@ -37,4 +44,13 @@ func Code(err error) int {
 		return se.Code
 	}
 	return 0
+}
+
+// Throttled is the wait a throttled StatusError in err's chain asks for, and whether there is one.
+func Throttled(err error) (time.Duration, bool) {
+	var se *StatusError
+	if errors.As(err, &se) && se.Throttled {
+		return se.RetryAfter, true
+	}
+	return 0, false
 }

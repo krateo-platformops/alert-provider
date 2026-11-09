@@ -22,11 +22,17 @@ type API struct {
 	mu         sync.Mutex
 	stores     map[string]*store // webhooks, dashboards, alerts
 	writes     []Write
+	lists      map[string]int // GETs of each collection
 	n          int
 	series     []any
 	seriesReqs []map[string]any
-	// Fail, when it returns a status code, answers the request with it.
+	// Fail, when it returns a status code, answers the request with it, and with FailHeader.
 	Fail func(method, kind, id string) int
+	// FailHeader are the headers of a Fail answer, a 429's Retry-After say.
+	FailHeader http.Header
+	// Gate, when set, is called before each request is served, outside the fake's lock: a test
+	// holds a request in flight by blocking in it.
+	Gate func(method, kind, id string)
 	// Sources, when set, is what /api/v2/sources lists instead of a log and a metric source.
 	Sources []any
 }
@@ -55,7 +61,7 @@ func (s *store) del(id string) {
 
 // New starts the fake.
 func New() *API {
-	a := &API{stores: map[string]*store{}}
+	a := &API{stores: map[string]*store{}, lists: map[string]int{}}
 	for _, k := range []string{"webhooks", "dashboards", "alerts"} {
 		a.stores[k] = &store{docs: map[string]map[string]any{}}
 	}
@@ -89,19 +95,31 @@ func (a *API) newTiles(tiles any, existing map[string]bool) []any {
 }
 
 func (a *API) serve(w http.ResponseWriter, r *http.Request) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/") // api, v2, kind[, id]
 	kind, id := parts[2], ""
 	if len(parts) > 3 {
 		id = parts[3]
 	}
+	a.mu.Lock()
+	gate := a.Gate
+	a.mu.Unlock()
+	if gate != nil {
+		gate(r.Method, kind, id)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	// A charts/series POST is a query, not a write.
 	if r.Method != http.MethodGet && kind != "charts" {
 		a.writes = append(a.writes, Write{r.Method, kind, id})
 	}
+	if r.Method == http.MethodGet && id == "" {
+		a.lists[kind]++
+	}
 	if a.Fail != nil {
 		if code := a.Fail(r.Method, kind, id); code != 0 {
+			for k, v := range a.FailHeader {
+				w.Header()[k] = v
+			}
 			w.WriteHeader(code)
 			return
 		}
@@ -194,6 +212,27 @@ func (a *API) ClearWrites() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.writes = nil
+}
+
+// Lists is how many times kind's collection was listed (GET /api/v2/<kind>), failed answers
+// included; ClearLists forgets them.
+func (a *API) Lists(kind string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lists[kind]
+}
+
+func (a *API) ClearLists() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lists = map[string]int{}
+}
+
+// SetGate sets Gate under the fake's lock, so a test can change it while requests are served.
+func (a *API) SetGate(gate func(method, kind, id string)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Gate = gate
 }
 
 // Get is a copy of a stored document, nil when absent.

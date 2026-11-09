@@ -12,14 +12,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/krateo-platformops/provider-runtime/pkg/ratelimit"
+	"github.com/krateo-platformops/provider-runtime/pkg/ratelimit/httpsignal"
 
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/httpx"
@@ -57,7 +62,20 @@ type Client struct {
 	http       *http.Client
 	dashboards []map[string]any
 	cached     bool
+
+	// OnWrite, when set, is called after every write to the alerts or the dashboards (a dashboard
+	// PUT can delete the alerts on a replaced tile), whether it succeeded or not: a write that
+	// failed on the way back may have landed. The Alert controller drops its shared alerts list
+	// on it.
+	OnWrite func()
+	// ThrottleDefault is the wait a rate-limit refusal that names no time asks for: the error's
+	// RetryAfter and the deadline reported to provider-runtime. Zero is DefaultThrottle.
+	ThrottleDefault time.Duration
 }
+
+// DefaultThrottle is the wait a rate-limit refusal without Retry-After asks for when the Client
+// has no ThrottleDefault.
+const DefaultThrottle = time.Minute
 
 // New returns a client of the HyperDX API at url. With tracing on, every call is a client span
 // (tracing.WrapTransport); the access key rides a header, which no span records.
@@ -75,6 +93,22 @@ func unwrap(v any) any {
 	return v
 }
 
+// RateLimitKey is the key of HyperDX's rate limit, as provider-runtime's governor gates calls on
+// it and as req reports its signals: the API's host (httpsignal.HostKey).
+func (c *Client) RateLimitKey() string {
+	u, err := url.Parse(c.url)
+	if err != nil {
+		return ""
+	}
+	return httpsignal.HostKey(u)
+}
+
+// writesAlerts says whether a request writes the alerts or the dashboards.
+func writesAlerts(method, path string) bool {
+	return method != http.MethodGet &&
+		(strings.HasPrefix(path, "/api/v2/alerts") || strings.HasPrefix(path, "/api/v2/dashboards"))
+}
+
 func (c *Client) req(ctx context.Context, method, path string, body any) (any, error) {
 	var rd io.Reader
 	if body != nil {
@@ -84,23 +118,30 @@ func (c *Client) req(ctx context.Context, method, path string, body any) (any, e
 		}
 		rd = bytes.NewReader(b)
 	}
-	url := c.url + path
-	r, err := http.NewRequestWithContext(ctx, method, url, rd)
+	r, err := http.NewRequestWithContext(ctx, method, c.url+path, rd)
 	if err != nil {
 		return nil, err
 	}
 	r.Header.Set("Authorization", "Bearer "+c.key)
 	r.Header.Set("Content-Type", "application/json")
+	if c.OnWrite != nil && writesAlerts(method, path) {
+		defer c.OnWrite()
+	}
 	resp, err := c.http.Do(r)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	throttled, retryAfter := c.signal(ctx, resp)
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if err := httpx.Check(resp); err != nil {
+		var se *httpx.StatusError
+		if errors.As(err, &se) {
+			se.Throttled, se.RetryAfter = throttled, retryAfter
+		}
 		return nil, err
 	}
 	if len(data) == 0 {
@@ -111,6 +152,31 @@ func (c *Client) req(ctx context.Context, method, path string, body any) (any, e
 		return nil, err
 	}
 	return unwrap(v), nil
+}
+
+// signal reports the response's rate-limit signal to provider-runtime (ratelimit.Report, a no-op
+// unless ctx carries the governor the reconciler installs), parsed as httpsignal parses it:
+// Retry-After as seconds or an HTTP-date, and the X-RateLimit-* counters. A refusal that names no
+// time is reported with ThrottleDefault, so the governor holds the key rather than letting the
+// next pass call straight back into the limit. It returns whether the response is a refusal and
+// how long it asked to wait.
+func (c *Client) signal(ctx context.Context, resp *http.Response) (bool, time.Duration) {
+	now := time.Now()
+	s, ok := httpsignal.Parse(resp, httpsignal.HostKey(resp.Request.URL), now)
+	if !ok {
+		return false, 0
+	}
+	if s.Throttled && !s.Deadline(now).After(now) {
+		s.RetryAfter = c.ThrottleDefault
+		if s.RetryAfter <= 0 {
+			s.RetryAfter = DefaultThrottle
+		}
+	}
+	ratelimit.Report(ctx, s)
+	if !s.Throttled {
+		return false, 0
+	}
+	return true, s.Deadline(now).Sub(now)
 }
 
 func maps(v any) []map[string]any {

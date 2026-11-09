@@ -22,6 +22,10 @@ const (
 	attrName      = attribute.Key("alert.name")
 	attrHyperDXID = attribute.Key("alert.hyperdx_id")
 	attrState     = attribute.Key("alert.state")
+	// attrListCached says whether alert.observe read the shared alerts list without a call of its
+	// own (alertsList); attrThrottled that HyperDX rate-limited the pass, which was deferred.
+	attrListCached = attribute.Key("hyperdx.alerts_list.cached")
+	attrThrottled  = attribute.Key("hyperdx.throttled")
 )
 
 // traced opens alert.reconcile around one provider-runtime reconcile, so the pass's action spans

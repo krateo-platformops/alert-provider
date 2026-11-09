@@ -33,6 +33,16 @@ and dashboard. A reconcile is one pass, every `config.reconcileInterval`:
   plans the push. It never reports the alert missing: provider-runtime's create handshake would
   then block an Alert whose create was cut short until a person clears an annotation. Update
   creates a missing alert, or pushes the spec.
+- The Observes of one interval share one read of HyperDX's alerts list (`GET /api/v2/alerts`),
+  not one per Alert, so a mirrored `state` is at most one interval old, the poll's own
+  granularity. Every write the controller makes to the alerts or dashboards drops the list, so the
+  next pass reads its own write.
+- HyperDX rate-limits its API. A `429` is reported to provider-runtime's rate-limit governor,
+  which holds every Alert's calls until the `Retry-After` HyperDX sent (a poll interval when it
+  sent none, 10 minutes at most): the pass is deferred, with `Synced=False` reason
+  `ReconcileDeferred` naming the time, and `status.phase` and `Ready` are left as they were. A
+  `429` on an Update (a push or a create) is still that pass's error; the passes after it are
+  deferred.
 - A pass that finds the alert ALERT fires it, once per interval: reconciles the poll did not
   schedule (a spec edit, an error's retry) fire nothing.
 - `krateo.io/paused` is also provider-runtime's annotation for skipping a whole reconcile. An

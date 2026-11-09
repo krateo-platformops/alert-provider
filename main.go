@@ -178,15 +178,25 @@ func run(log logging.Logger) error {
 		log.Info("[reconciler] HYPERDX_ACCESS_KEY unset — reconciler disabled")
 	default:
 		hdx := func() *hyperdx.Client { return hyperdx.New(apiURL, accessKey) }
+		maxThrottle := alert.MaxThrottle
+		controllerOptions := controller.Options{
+			Logger:       log,
+			PollInterval: interval,
+			// A token bucket: provider-runtime consults it on every reconcile, not only
+			// after an error, so a failure back-off here would delay every pass.
+			GlobalRateLimiter: ratelimiter.NewGlobal(20),
+			// One worker, as the Alert controller runs (see alert.Setup).
+			MaxConcurrentReconciles: 1,
+			// HyperDX rate-limits its API: the governor holds every Alert's calls until the
+			// time a 429 asked for, and the passes in between are deferred, not failed.
+			RateLimit: controller.RateLimitOptions{Enabled: true, MaxHold: &maxThrottle},
+		}
+		if err := controllerOptions.SetupRateLimitGovernor(mgr); err != nil {
+			return fmt.Errorf("cannot set up the rate-limit governor: %w", err)
+		}
 		if err := alert.Setup(mgr, alert.Options{
 			Controller: option.ControllerOptions{
-				Options: controller.Options{
-					Logger:       log,
-					PollInterval: interval,
-					// A token bucket: provider-runtime consults it on every reconcile, not only
-					// after an error, so a failure back-off here would delay every pass.
-					GlobalRateLimiter: ratelimiter.NewGlobal(20),
-				},
+				Options: controllerOptions,
 				Timeout: 2 * time.Minute,
 			},
 			Namespace:     namespace,
