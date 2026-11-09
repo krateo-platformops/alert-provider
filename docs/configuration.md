@@ -15,6 +15,7 @@ timestamp: 2026-08-20T00:00:00Z
 | `config.autopilotA2aUrl` | `http://incident-agent.krateo-system.svc:8080/` | the RCA agent's A2A endpoint |
 | `config.compareModelConfig` | `gemini-flash` | the kagent ModelConfig whose model names the open incident that covers a firing; provider OpenAI or Gemini |
 | `config.maxCompareCandidates` | `50` | how many of an alert's newest open, analyzed incidents one comparison weighs |
+| `config.incidentCoverWindow` | `24h` | Go duration an open, analyzed incident stays a comparison candidate after it opened or last covered a firing; past it, a firing it would have covered opens a new incident with a fresh RCA. `"0"` disables it |
 | `config.failedAnalysisHold` | `1800` | seconds an incident whose RCA failed keeps taking its alert's firings; past it, a new incident gets a fresh RCA |
 | `config.analysisRetries` | `2` | how many more times an RCA that failed transiently runs |
 | `config.analysisRetryDelay` | `120` | seconds before the first RCA retry; each next one waits twice as long |
@@ -54,7 +55,7 @@ The spans, by trace:
 | `alert.create` | internal | `alert.reconcile`, on the pass that creates the HyperDX dashboard and alert | as above |
 | `alert.update` | internal | `alert.reconcile`, on a pass that pushes the spec | as above |
 | `alert.delete` | internal | `alert.reconcile`, on the finalizing pass | as above |
-| `incident.fire` | internal | new root, **linked** to the `alert.observe` that fired it | `alert.namespace`, `alert.name`, `incident.opened`, `incident.name` |
+| `incident.fire` | internal | new root, **linked** to the `alert.observe` that fired it | `alert.namespace`, `alert.name`, `incident.opened`, `incident.name`, `incident.stale_skipped` |
 | `incident.compare` | internal | `incident.fire` | `incident.compare.candidates`, `incident.compare.cached`, `incident.compare.match` |
 | `incident.analyze` | internal | `incident.fire`, or a new root linked to `incident.reanalyze` | `incident.namespace`, `incident.name`, `incident.analysis.attempts` |
 | `incident.reanalyze` | internal | root, one per reanalysis request | `incident.namespace`, `incident.name`, `incident.reanalysis.count` |

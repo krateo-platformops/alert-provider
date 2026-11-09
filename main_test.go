@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -60,5 +61,16 @@ func TestTheCacheNeedsTheAPIsInItsScheme(t *testing.T) {
 	}
 	if _, err := cache.New(cfg, o); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// INCIDENT_COVER_WINDOW is a Go duration, 24h when unset.
+func TestTheCoverWindowIsAGoDuration(t *testing.T) {
+	if d := envDuration("INCIDENT_COVER_WINDOW_UNSET_IN_TEST", "24h"); d != 24*time.Hour {
+		t.Errorf("default = %s, want 24h", d)
+	}
+	t.Setenv("INCIDENT_COVER_WINDOW", "1h")
+	if d := envDuration("INCIDENT_COVER_WINDOW", "24h"); d != time.Hour {
+		t.Errorf("1h = %s", d)
 	}
 }

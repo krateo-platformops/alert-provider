@@ -215,9 +215,16 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 
 1. lists the Incidents in the home namespace, the only one whose Alerts reach the writer (see [Namespaces](#namespaces)), labelled with the Alert's name;
 2. asks the comparison model, in one call over the open incidents that have an analysis (a root
-   cause, or a report from an RCA that did not fail), which one causes the alert's current
-   records (see [Incident comparison](#incident-comparison)). That one covers the firing: no RCA,
-   and no write, so an incident whose alert keeps firing is not rewritten every pass;
+   cause, or a report from an RCA that did not fail) and are not stale, which one causes the
+   alert's current records (see [Incident comparison](#incident-comparison)). That one covers the
+   firing: no RCA, and no status write. The firing stamps its time in the incident's
+   `observability.krateo.io/last-covered-at` annotation, at most once per 1/24 of
+   `config.incidentCoverWindow`, so an incident whose alert keeps firing is not rewritten every
+   pass. An incident is stale when it neither opened nor covered a firing within
+   `config.incidentCoverWindow` (24h): an incident nobody moves on would otherwise take every later
+   firing of its alert, and a new problem would get no RCA. A stale incident is left as it is;
+   when the firing opens a new incident (step 6), that one names the stale ones, newest first and
+   at most five, in `observability.krateo.io/supersedes-stale`;
 3. else the newest open incident without an analysis covers the firing: one still
    `Analyzing`, or one whose RCA failed (whatever text the failure left in `status.report`) less
    than `config.failedAnalysisHold` (1800 s) after its `status.completedAt`. There is nothing to

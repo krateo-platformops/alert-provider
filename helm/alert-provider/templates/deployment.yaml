@@ -195,6 +195,9 @@ spec:
               value: {{ .Values.config.compareModelConfig | quote }}
             - name: MAX_COMPARE_CANDIDATES
               value: {{ .Values.config.maxCompareCandidates | quote }}
+            # A Go duration: how long an open incident covers firings after it opened or last covered one.
+            - name: INCIDENT_COVER_WINDOW
+              value: {{ .Values.config.incidentCoverWindow | quote }}
             - name: FAILED_ANALYSIS_HOLD
               value: {{ .Values.config.failedAnalysisHold | quote }}
             - name: ANALYSIS_RETRIES
