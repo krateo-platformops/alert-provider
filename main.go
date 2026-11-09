@@ -64,6 +64,20 @@ func envInt(key string, fallback, min int) int {
 	return n
 }
 
+// envDuration is the Go duration in key (e.g. "24h"), or fallback when it is unset. A malformed or
+// negative value stops the process.
+func envDuration(key, fallback string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(getenv(key, fallback)))
+	if err == nil && d < 0 {
+		err = fmt.Errorf("negative duration %s", d)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", key, err)
+		os.Exit(1)
+	}
+	return d
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "bootstrap" {
 		os.Exit(runBootstrap())
@@ -134,6 +148,7 @@ func run(log logging.Logger) error {
 		MaxConcurrentAnalyses: envInt("MAX_CONCURRENT_ANALYSES", 2, 1),
 		FailedAnalysisHold:    time.Duration(envInt("FAILED_ANALYSIS_HOLD", 1800, 0)) * time.Second,
 		MaxCandidates:         envInt("MAX_COMPARE_CANDIDATES", compare.DefaultMaxCandidates, 1),
+		CoverWindow:           envDuration("INCIDENT_COVER_WINDOW", "24h"),
 		AnalysisRetries:       envInt("ANALYSIS_RETRIES", 2, 0),
 		AnalysisRetryDelay:    time.Duration(envInt("ANALYSIS_RETRY_DELAY", 120, 1)) * time.Second,
 	}

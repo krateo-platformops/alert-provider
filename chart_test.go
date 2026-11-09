@@ -162,3 +162,44 @@ func TestTheSchemaRefusesUnknownOrMistypedOTelValues(t *testing.T) {
 		}
 	}
 }
+
+// config.incidentCoverWindow reaches INCIDENT_COVER_WINDOW, 24h by default.
+// MUTATION: dropping the env entry from the Deployment fails this.
+func TestTheCoverWindowReachesTheDeployment(t *testing.T) {
+	for set, want := range map[string]string{"": "24h", "config.incidentCoverWindow=1h": "1h"} {
+		var args []string
+		if set != "" {
+			args = []string{"--set-string", set}
+		}
+		dep, _ := render(t, args...)
+		got, found := "", false
+		for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+			if e.Name == "INCIDENT_COVER_WINDOW" {
+				got, found = e.Value, true
+			}
+		}
+		if !found || got != want {
+			t.Errorf("--set-string %q: INCIDENT_COVER_WINDOW = %q (present %v), want %q", set, got, found, want)
+		}
+	}
+}
+
+// The schema takes a Go duration or "0", and refuses anything time.ParseDuration would.
+func TestTheSchemaRefusesAMalformedCoverWindow(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is not on PATH")
+	}
+	for set, ok := range map[string]bool{"24h": true, "90m": true, "1h30m": true, "0": true,
+		"24": false, "1d": false, "-1h": false, "24 h": false, "": false} {
+		dir := filepath.Join(t.TempDir(), "alert-provider")
+		if out, err := exec.Command("cp", "-R", chartDir, dir).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		raw, _ := os.ReadFile(filepath.Join(dir, "Chart.yaml"))
+		_ = os.WriteFile(filepath.Join(dir, "Chart.yaml"), bytes.ReplaceAll(raw, []byte("CHART_VERSION"), []byte("0.0.0")), 0o600)
+		out, err := exec.Command("helm", "template", "t", dir, "--set-string", "config.incidentCoverWindow="+set).CombinedOutput()
+		if (err == nil) != ok {
+			t.Errorf("config.incidentCoverWindow=%q: rendered %v, want %v:\n%.300s", set, err == nil, ok, out)
+		}
+	}
+}

@@ -15,8 +15,9 @@ every 60 s, Alert is ALERT in HyperDX → krateo-alert-provider
 The reconciler mirrors each Alert's HyperDX state every pass; a pass that finds it ALERT is a
 firing, and the handler:
 1. asks the comparison model, in one call over the Alert's open analyzed `Incident`s
-   (`observability.krateo.io/v1alpha1`), which one causes its current records; that one covers
-   the firing, which writes nothing,
+   (`observability.krateo.io/v1alpha1`) that opened or last covered a firing within
+   `config.incidentCoverWindow` (24h), which one causes its current records; that one covers
+   the firing, which only stamps its `observability.krateo.io/last-covered-at` annotation,
 2. else creates one in state `Analyzing` and calls incident-agent over A2A (JSON-RPC
    `message/stream`) with the incident's prompt,
 3. writes the analysis and its `howToFix` scripts to the Incident's status, in state `Open`.

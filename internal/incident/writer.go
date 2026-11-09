@@ -1,11 +1,11 @@
 // Package incident turns a firing alert into Incidents, each with a root-cause analysis.
 //
 // The Alert reconcile mirrors every Alert's HyperDX state about every 60 s and calls Fire for each
-// one that is ALERT. A firing an incident covers (see pick) writes nothing; any other opens a new
-// incident: it creates the Incident in state Analyzing, runs the incident-agent RCA over A2A, and
-// writes the analysis with its howToFix scripts in state Open. An alert therefore has any number
-// of incidents, one per problem. From Open on, the incident controller runs the scripts and moves
-// the Incident.
+// one that is ALERT. A firing an incident covers (see pick) writes at most its cover time (see
+// recordCover); any other opens a new incident: it creates the Incident in state Analyzing, runs
+// the incident-agent RCA over A2A, and writes the analysis with its howToFix scripts in state Open.
+// An alert therefore has any number of incidents, one per problem. From Open on, the incident
+// controller runs the scripts and moves the Incident.
 package incident
 
 import (
@@ -36,6 +36,19 @@ const (
 	// matched. For an alert whose records are the leak, such as a token in telemetry.
 	LabelAnalysis = "observability.krateo.io/analysis"
 	AnalysisHuman = "human"
+	// AnnotationLastCoveredAt, on an open incident, is the RFC 3339 time it last covered a firing
+	// of its alert (see recordCover). With its creation it says whether the incident is still fresh
+	// (see stale).
+	AnnotationLastCoveredAt = "observability.krateo.io/last-covered-at"
+	// AnnotationSupersedesStale, on a new incident, names the stale open incidents of its alert the
+	// opening firing was not compared with, newest first, comma-separated, at most maxSupersedes.
+	// They are left as they are: their lifecycle is the incident controller's.
+	AnnotationSupersedesStale = "observability.krateo.io/supersedes-stale"
+	maxSupersedes             = 5
+	// coverStampsPerWindow bounds the cover-time writes: an incident's cover time is rewritten only
+	// once it is older than CoverWindow/coverStampsPerWindow, so an alert that fires every pass
+	// patches its incident about 24 times per window, not every pass.
+	coverStampsPerWindow = 24
 	// writeAttempts is how often a conditioned status write is retried on a 409.
 	writeAttempts = 5
 )
@@ -86,6 +99,13 @@ type Config struct {
 	FailedAnalysisHold time.Duration
 	// MaxCandidates is how many of an alert's newest open, analyzed incidents one comparison weighs.
 	MaxCandidates int
+	// CoverWindow is how long an open, analyzed incident stays a comparison candidate after it
+	// opened or last covered a firing (AnnotationLastCoveredAt). Past it the incident is stale: no
+	// comparison weighs it, so a firing it would have covered opens a new incident and RCA, which
+	// names it in AnnotationSupersedesStale. An incident nobody moves on would otherwise take every
+	// later firing of its alert, and new problems would get no analysis. 0 disables it: every open
+	// incident is a candidate and no cover time is written.
+	CoverWindow time.Duration
 	// AnalysisRetries is how many more times an RCA that failed transiently (see transient) runs,
 	// AnalysisRetryDelay after the first failure and twice as long after each next one. The
 	// incident stays Analyzing meanwhile.
@@ -260,14 +280,37 @@ func holdsFirings(incident map[string]any, at time.Time, hold time.Duration) boo
 	return !ok || at.Sub(since) < hold
 }
 
+// lastActive is when incident opened or last covered a firing (AnnotationLastCoveredAt), whichever
+// is later; false when it carries neither.
+func lastActive(incident map[string]any) (time.Time, bool) {
+	m := metadata(incident)
+	since, ok := timestamp(m["creationTimestamp"])
+	annotations, _ := m["annotations"].(map[string]any)
+	if covered, cok := timestamp(annotations[AnnotationLastCoveredAt]); cok && (!ok || covered.After(since)) {
+		return covered, true
+	}
+	return since, ok
+}
+
+// stale says an open incident neither opened nor covered a firing in the CoverWindow before at.
+// An incident without either time is never stale.
+func (w *Writer) stale(incident map[string]any, at time.Time) bool {
+	if w.cfg.CoverWindow <= 0 {
+		return false
+	}
+	since, ok := lastActive(incident)
+	return ok && at.Sub(since) >= w.cfg.CoverWindow
+}
+
 func (w *Writer) alertIncidents(ctx context.Context, ns, alert string) ([]map[string]any, error) {
 	return w.kube.List(ctx, ns, LabelAlert+"="+alert)
 }
 
-// pick is the incident a firing at at counts on, or nil to open a new one. In order:
+// pick is the incident a firing at at counts on, or nil to open a new one, and the stale open
+// incidents (see stale) it did not compare, newest first. In order:
 //  1. the open incident (any state but Resolved and Closed) with an analysis that the comparison
 //     (see verdict) names as the cause of the alert's current records, among the newest
-//     MaxCandidates;
+//     MaxCandidates that are not stale;
 //  2. the newest open incident without an analysis: one still Analyzing, or one whose RCA failed
 //     less than FailedAnalysisHold ago. There is nothing to compare with, and a new incident would
 //     rerun the analysis. Past the hold, a failed incident takes no more firings, so a new
@@ -280,7 +323,7 @@ func (w *Writer) alertIncidents(ctx context.Context, ns, alert string) ([]map[st
 // compare with. It returns a compare.NoVerdict when the comparison gave no verdict and nothing
 // above covers the firing: whether it is a new problem is then unknown, so nothing opens.
 func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[string]any, at time.Time,
-	grace time.Duration, rows func() ([]compare.Row, error)) (map[string]any, error) {
+	grace time.Duration, rows func() ([]compare.Row, error)) (map[string]any, []string, error) {
 	var open []map[string]any
 	for _, i := range items {
 		if !ended(i) {
@@ -290,21 +333,30 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 	sort.SliceStable(open, func(a, b int) bool { return less(sortKey(open[b]), sortKey(open[a])) })
 	if alert.HumanAnalysis {
 		// Nothing to compare, and its records must not reach a model: the newest open incident
-		// takes every firing until a person closes it.
+		// takes every firing until a person closes it, however long ago it opened.
 		if len(open) > 0 {
-			return open[0], nil
+			return open[0], nil, nil
 		}
 		if latest := newest(items); latest != nil && resolvedWithin(latest, at, grace) {
-			return latest, nil
+			return latest, nil, nil
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	var noVerdict error
 	var candidates []map[string]any
+	var stale []string
 	for _, i := range open {
-		if compare.Comparable(i) && len(candidates) < w.cfg.MaxCandidates {
+		switch {
+		case !compare.Comparable(i):
+		case w.stale(i, at):
+			stale = append(stale, str(metadata(i), "name"))
+		case len(candidates) < w.cfg.MaxCandidates:
 			candidates = append(candidates, i)
 		}
+	}
+	if len(stale) > 0 {
+		logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[compare] %s/%s: %d stale open incidents not compared (no firing covered in %s)",
+			ns, alert.Name, len(stale), w.cfg.CoverWindow))
 	}
 	if len(candidates) > 0 {
 		names := make([]string, len(candidates))
@@ -324,19 +376,19 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 			}
 			logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[compare] %s/%s vs %d incidents: %s (%s)", ns, alert.Name, len(candidates), shown, reason))
 			if match != "" {
-				return byName[match], nil
+				return byName[match], stale, nil
 			}
 		}
 	}
 	for _, i := range open {
 		if !compare.Comparable(i) && holdsFirings(i, at, w.cfg.FailedAnalysisHold) {
-			return i, nil
+			return i, stale, nil
 		}
 	}
 	if latest := newest(items); latest != nil && resolvedWithin(latest, at, grace) {
-		return latest, nil
+		return latest, stale, nil
 	}
-	return nil, noVerdict
+	return nil, stale, noVerdict
 }
 
 // verdict is the comparison of a firing with candidates, named names: the alert's last answered
@@ -408,49 +460,75 @@ func (w *Writer) patchStatus(ctx context.Context, ns string, incident map[string
 		"metadata": map[string]any{"resourceVersion": m["resourceVersion"]}, "status": st})
 }
 
-// covered logs the incident that covers a firing. The firing writes nothing to it.
-func (w *Writer) covered(ctx context.Context, ns string, incident map[string]any) {
+// covered logs the incident that covers a firing at at, and records the cover on it (see
+// recordCover).
+func (w *Writer) covered(ctx context.Context, ns string, incident map[string]any, at time.Time) {
 	shown, ok := state(incident)
 	if !ok || shown == "" {
 		shown = "new"
 	}
 	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: covers the firing (%s)", ns, str(metadata(incident), "name"), shown))
+	w.recordCover(ctx, ns, incident, at)
+}
+
+// recordCover stamps AnnotationLastCoveredAt with at on an open incident that covered a firing, so
+// an incident whose problem keeps firing stays fresh (see stale). It is a merge patch of that one
+// annotation, so it never touches status, and it is skipped while the incident's last activity is
+// younger than CoverWindow/coverStampsPerWindow: a failed or skipped stamp costs at most that much
+// freshness. A failure is logged; the firing stays covered.
+func (w *Writer) recordCover(ctx context.Context, ns string, incident map[string]any, at time.Time) {
+	if w.cfg.CoverWindow <= 0 || ended(incident) {
+		return
+	}
+	if since, ok := lastActive(incident); ok && at.Sub(since) < w.cfg.CoverWindow/coverStampsPerWindow {
+		return
+	}
+	name := str(metadata(incident), "name")
+	if err := w.kube.Patch(ctx, ns, name, map[string]any{"metadata": map[string]any{
+		"annotations": map[string]any{AnnotationLastCoveredAt: at.UTC().Format(time.RFC3339)}}}); err != nil {
+		logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: cover time not recorded (%s)", ns, name, err))
+	}
 }
 
 // openOrCover is one firing: an incident pick chooses covers it, or it creates one. It returns
-// the new Incident, or nil when an existing one covers the firing.
+// the new Incident, or nil when an existing one covers the firing, and how many stale open
+// incidents the firing was not compared with.
 func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt string, at time.Time,
-	grace time.Duration, rows func() ([]compare.Row, error)) (map[string]any, error) {
+	grace time.Duration, rows func() ([]compare.Row, error)) (map[string]any, int, error) {
 	now := pyfmt.Isoformat(at)
 	items, err := w.alertIncidents(ctx, ns, alert.Name)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	target, err := w.pick(ctx, alert, ns, items, at, grace, rows)
+	target, stale, err := w.pick(ctx, alert, ns, items, at, grace, rows)
 	if err != nil {
-		return nil, err
+		return nil, len(stale), err
 	}
 	if target != nil {
-		w.covered(ctx, ns, target)
-		return nil, nil
+		w.covered(ctx, ns, target, at)
+		return nil, len(stale), nil
 	}
 	name := IncidentName(alert.Name, at)
 	labels := map[string]any{LabelAlert: alert.Name}
 	if alert.HumanAnalysis {
 		labels[LabelAnalysis] = AnalysisHuman
 	}
+	meta := map[string]any{"name": name, "namespace": ns, "labels": labels}
+	if len(stale) > 0 {
+		meta["annotations"] = map[string]any{AnnotationSupersedesStale: strings.Join(stale[:min(len(stale), maxSupersedes)], ",")}
+	}
 	created, err := w.kube.Create(ctx, map[string]any{
 		"apiVersion": IncidentGVK.GroupVersion().String(), "kind": IncidentGVK.Kind,
-		"metadata": map[string]any{"name": name, "namespace": ns, "labels": labels},
+		"metadata": meta,
 		"spec": map[string]any{"alertRef": map[string]any{"name": alert.Name, "namespace": ns}, "trigger": "alert",
 			"prompt": prompt, "triggeredAt": now}})
 	if err != nil {
 		if code(err) != 409 {
-			return nil, err
+			return nil, len(stale), err
 		}
 		// A concurrent firing created it this second.
 		logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: covers the firing (created concurrently)", ns, name))
-		return nil, nil
+		return nil, len(stale), nil
 	}
 	// Unconditioned: the controller may already have touched the new object, and no other writer
 	// sets these fields yet.
@@ -459,10 +537,10 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		first = map[string]any{"state": "Open", "error": HumanOnly, "completedAt": now}
 	}
 	if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{"status": first}); err != nil {
-		return nil, err
+		return nil, len(stale), err
 	}
 	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: opened", ns, name))
-	return created, nil
+	return created, len(stale), nil
 }
 
 // finish writes the analysis. An incident still Analyzing becomes Open; in any other state (a
@@ -528,7 +606,8 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 // the RCA agent reads the whole platform, so its analysis of a tenant's alert could quote other
 // tenants' data. The Alert controller never hands one over; this is the writer's own guard.
 //
-// Its span is incident.fire. The Alert controller passes a context detached from its reconcile
+// Its span is incident.fire, with incident.stale_skipped the stale open incidents the firing was
+// not compared with (see stale). The Alert controller passes a context detached from its reconcile
 // (tracing.Detach), so the span is a new trace linked to the reconcile's alert.observe.
 func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	ctx, span := tracing.Start(ctx, spanFire, trace.WithAttributes(alertAttrs(alert.Namespace, alert.Name)...))
@@ -575,10 +654,11 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 		}
 		return found, nil
 	}
-	created, err := w.openOrCover(ctx, ns, alert, prompt, w.now(), time.Duration(grace)*time.Second, rows)
+	created, staleSkipped, err := w.openOrCover(ctx, ns, alert, prompt, w.now(), time.Duration(grace)*time.Second, rows)
 	w.mu.Lock()
 	delete(w.firing, key)
 	w.mu.Unlock()
+	span.SetAttributes(attrStaleSkipped.Int(staleSkipped))
 	switch {
 	case compare.IsNoVerdict(err):
 		log.Info(fmt.Sprintf("[incident] alert %s: no comparison verdict (%s); the next pass retries", key, err))

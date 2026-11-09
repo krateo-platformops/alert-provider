@@ -250,10 +250,45 @@ func (f *fakeKube) Patch(_ context.Context, ns, name string, patch map[string]an
 	}
 	body := clone(patch)
 	delete(body, "status")
+	// Of metadata, only the annotations take a merge here; the rest is the apiserver's.
+	if pm, ok := body["metadata"].(map[string]any); ok {
+		if ann, ok := pm["annotations"].(map[string]any); ok {
+			meta := obj["metadata"].(map[string]any)
+			if _, ok := meta["annotations"].(map[string]any); !ok {
+				meta["annotations"] = map[string]any{}
+			}
+			merge(meta["annotations"].(map[string]any), ann)
+		}
+	}
 	delete(body, "metadata")
 	merge(obj, body)
 	f.bump(obj)
 	return nil
+}
+
+// annotate sets an annotation, as another client's write.
+func (f *fakeKube) annotate(ns, name, key, value string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	meta := f.incidents[ns+"/"+name]["metadata"].(map[string]any)
+	if _, ok := meta["annotations"].(map[string]any); !ok {
+		meta["annotations"] = map[string]any{}
+	}
+	meta["annotations"].(map[string]any)[key] = value
+	f.bump(f.incidents[ns+"/"+name])
+}
+
+// objectPatches are the bodies of every object (not status) patch of name, in order.
+func (f *fakeKube) objectPatches(name string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, c := range f.calls {
+		if c.method == "PATCH-OBJECT" && c.name == name {
+			out = append(out, c.body)
+		}
+	}
+	return out
 }
 
 // writeSpec is a spec write by another client (a human).

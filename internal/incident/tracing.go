@@ -21,6 +21,7 @@ const (
 	attrIncidentNamespace = attribute.Key("incident.namespace")
 	attrIncident          = attribute.Key("incident.name")
 	attrOpened            = attribute.Key("incident.opened")
+	attrStaleSkipped      = attribute.Key("incident.stale_skipped")
 	attrAttempts          = attribute.Key("incident.analysis.attempts")
 	attrReanalysis        = attribute.Key("incident.reanalysis.count")
 	attrCandidates        = attribute.Key("incident.compare.candidates")
