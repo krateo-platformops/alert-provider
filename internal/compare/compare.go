@@ -105,7 +105,7 @@ type Alert struct {
 	Interval      string
 	Threshold     string // its Python str(); "1" when unset
 	ThresholdType string
-	Message       string
+	Description   string
 	// Source is the Alert's spec.source: Traces, or empty (logs).
 	Source string
 }
@@ -213,8 +213,8 @@ func Incidents(incidents []map[string]any) string {
 // rows are the alert's records, the most frequent first. Generic: one prompt serves every alert.
 func Prompt(a Alert, incidents []map[string]any, rows []Row) string {
 	intent := ""
-	if a.Message != "" {
-		intent = " Its intent: " + a.Message + "."
+	if a.Description != "" {
+		intent = " Its intent: " + a.Description + "."
 	}
 	name := a.DisplayName
 	if name == "" {

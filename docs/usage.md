@@ -46,7 +46,7 @@ spec:
   interval: 1d
   threshold: 5
   thresholdType: above
-  message: Tenant acme spent more than $5 of LLM in a day.
+  description: Tenant acme spent more than $5 on LLM calls in a day.
 ```
 
 - `value` requires `aggregation`, and `increase` is refused (it is a counter metric's).
@@ -83,7 +83,7 @@ spec:
   interval: 1d
   threshold: 5
   thresholdType: above
-  message: Tenant acme spent more than $5 of LLM in a day.
+  description: Tenant acme spent more than $5 on LLM calls in a day.
 ```
 
 - `aggregation` is how the points over `interval` become the compared value: `avg`, `max`, `min`,

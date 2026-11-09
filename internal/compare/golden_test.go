@@ -18,7 +18,7 @@ func alertOf(cr map[string]any) Alert {
 		return ""
 	}
 	a := Alert{Name: meta["name"].(string), DisplayName: str("displayName"), Interval: str("interval"),
-		ThresholdType: str("thresholdType"), Message: str("message"), Threshold: "1"}
+		ThresholdType: str("thresholdType"), Description: str("message"), Threshold: "1"}
 	if v, ok := spec["where"]; ok {
 		a.Where = pyfmt.Str(v)
 	}

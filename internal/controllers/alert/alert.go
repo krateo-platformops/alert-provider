@@ -331,11 +331,11 @@ func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) 
 }
 
 // fields are the HyperDX alert fields of the Alert. An Alert outside the home namespace without a
-// message gets one that does not promise the incident-agent triage it never gets.
+// description gets a message that does not promise the incident-agent triage it never gets.
 func fields(home string, a *v1alpha1.Alert) hyperdx.AlertFields {
 	spec := a.Spec
 	f := hyperdx.AlertFields{Interval: spec.Interval, Threshold: threshold(spec),
-		ThresholdType: spec.ThresholdType, Message: spec.Message,
+		ThresholdType: spec.ThresholdType, Message: spec.Description,
 		ConsecutiveWindows: a.Windows()}
 	if spec.ThresholdMax != "" {
 		f.ThresholdMax = spec.ThresholdMax
@@ -798,7 +798,7 @@ func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[strin
 	}
 	alert := incident.Alert{Namespace: a.Namespace, HumanAnalysis: a.Labels[incident.LabelAnalysis] == incident.AnalysisHuman, Alert: compare.Alert{
 		Name: a.Name, DisplayName: a.Spec.DisplayName, Where: a.Spec.Where, Interval: a.Spec.Interval,
-		Threshold: pyfmt.NumberStr(threshold(a.Spec)), ThresholdType: a.Spec.ThresholdType, Message: a.Spec.Message,
+		Threshold: pyfmt.NumberStr(threshold(a.Spec)), ThresholdType: a.Spec.ThresholdType, Description: a.Spec.Description,
 		Source: a.Spec.Source,
 	}}
 	hdx, sourceID, group := f.hdx(), hyperdx.ID(source), compare.GroupOf(a.Spec.Source)

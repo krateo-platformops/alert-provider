@@ -57,7 +57,7 @@ spec:
   interval: 15m
   threshold: 5
   thresholdType: above
-  message: snowplow calls are failing
+  description: Calls to snowplow are failing.
 ```
 
 A traces Alert needs a `where`, and cannot take `metricRef`, `labels` or `ratio`. With `value` and
@@ -100,7 +100,7 @@ spec:
   consecutiveWindows: 5
   threshold: 1
   thresholdType: below
-  message: A container is not ready.
+  description: A container has been failing its readiness check for 5 minutes.
 ```
 
 How HyperDX evaluates it:
@@ -120,7 +120,7 @@ How HyperDX evaluates it:
   [Grouped alerts](../../docs/overview.md#grouped-alerts).
 - The keys are read off the point or, as here, its resource; a key matches either.
 - HyperDX's notification opens with `Group: "…"`, the firing series' keys and values, before the
-  message, which is pushed as written. The tile aliases each key's expression as the key, so the
+  description, which is pushed as written. The tile aliases each key's expression as the key, so the
   line reads `Group: "k8s.namespace.name:<ns>, k8s.pod.name:<pod>, k8s.container.name:<c>"`.
   The provider's webhook log carries it:
   `[webhook] '🚨 sre-pod-not-ready' ALERT group="k8s.namespace.name:<ns>, k8s.pod.name:<pod>, k8s.container.name:<c>" eventId=…`.

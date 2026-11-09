@@ -197,12 +197,12 @@ func TestARecreatedWebhookRebuildsTheAlertsOfEveryNamespace(t *testing.T) {
 	}
 }
 
-func TestATenantAlertWithoutAMessagePromisesNoTriage(t *testing.T) {
+func TestATenantAlertWithoutADescriptionPromisesNoTriage(t *testing.T) {
 	a := tenantCR(teamA, shared, "w")
-	a.Spec.Message = ""
+	a.Spec.Description = ""
 	eq(t, "tenant", fields(ns, a).Message, "team-a/llm-budget threshold crossed.")
 	home := alertCR(shared, "w", v1alpha1.AlertStatus{})
-	home.Spec.Message = ""
+	home.Spec.Description = ""
 	eq(t, "home", fields(ns, home).Message, "") // hyperdx's default, as before
 }
 
