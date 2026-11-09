@@ -14,8 +14,8 @@ import (
 // incident.fire, the analysis under incident.analyze. Neither is the caller's span (here the
 // alert.observe that hands the firing over), though both are in its trace when it is passed on
 // undetached.
-// MUTATION: binding Fire's or RunAnalysis' lines to the context they are given, before
-// tracing.Start, fails this; so does logging either on w.log, unbound.
+// MUTATION: binding RunAnalysis' lines to the context it is given, before tracing.Start, fails
+// this; so does logging the opening or the analysis on w.log, unbound.
 func TestAFiringsLinesNameTheirOwnSpans(t *testing.T) {
 	rec := tracingtest.Install(t)
 	logs := tracingtest.CaptureLogs(t)
@@ -36,6 +36,27 @@ func TestAFiringsLinesNameTheirOwnSpans(t *testing.T) {
 		if l.SpanID == obs.SpanContext.SpanID().String() {
 			t.Errorf("log %q names the caller's alert.observe", l.Msg)
 		}
+	}
+}
+
+// A firing Fire refuses itself logs under its own incident.fire, not the caller's span.
+// MUTATION: binding Fire's own lines to the context it is given, before tracing.Start, fails this.
+func TestARefusedFiringsLineNamesIncidentFire(t *testing.T) {
+	rec := tracingtest.Install(t)
+	logs := tracingtest.CaptureLogs(t)
+	c := newCase(t)
+	c.w.log = logs.Logger
+
+	pctx, parent := tracing.Start(context.Background(), "alert.observe")
+	c.w.Fire(pctx, Alert{Namespace: "elsewhere", Alert: compare.Alert{Name: alertName, Where: "Body LIKE '%x%'", Threshold: "1"}},
+		c.recordsOf)
+	parent.End()
+
+	obs, fire := rec.One("alert.observe"), rec.One("incident.fire")
+	refused := logs.One("no incident and no RCA")
+	refused.In(t, fire)
+	if refused.SpanID == obs.SpanContext.SpanID().String() {
+		t.Errorf("log %q names the caller's alert.observe", refused.Msg)
 	}
 }
 
