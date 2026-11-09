@@ -566,7 +566,9 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	st := pyfmt.Str(res["state"])
 	a.Status.HyperdxAlertID, a.Status.HyperdxDashboardID = pyfmt.Str(res["id"]), dash
 	a.Status.OkSince = OkSince(a.Status, st, now())
-	a.Status.State, a.Status.Phase = st, v1alpha1.PhaseSynced
+	// An empty error clears a refusal (an Alert created before its Metric) or an earlier failure:
+	// this pass's status write is the one that says the Alert is Synced.
+	a.Status.State, a.Status.Phase, a.Status.Error = st, v1alpha1.PhaseSynced, ""
 	a.SetConditions(prv1.Available())
 	e.log.Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", hyperdxName(e.home, a), a.Status.HyperdxAlertID, st))
 	e.firings.start(a, e.rows, st)
