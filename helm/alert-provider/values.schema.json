@@ -103,6 +103,13 @@
           "description": "How many of an alert's newest open, analyzed incidents one comparison weighs. An older one can still take a firing as unanalyzed, never through the comparison. Each adds up to about 5,500 characters to the prompt.",
           "default": 50
         },
+        "incidentCoverWindow": {
+          "type": "string",
+          "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$",
+          "title": "Incident cover window",
+          "description": "Go duration (e.g. 90m, 24h) an open, analyzed incident keeps covering its alert's firings after it opened or last covered one (observability.krateo.io/last-covered-at). Past it the incident is stale: no comparison weighs it, so a firing it would have covered opens a new incident with a fresh RCA, which names it in observability.krateo.io/supersedes-stale. \"0\" disables it.",
+          "default": "24h"
+        },
         "failedAnalysisHold": {
           "type": "integer",
           "minimum": 0,

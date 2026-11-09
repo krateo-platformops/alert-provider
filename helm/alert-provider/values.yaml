@@ -22,6 +22,13 @@ config:
   # can still take a firing as unanalyzed, never through the comparison. Each adds up to ~5.5k
   # characters (its root cause and three scripts) to the prompt.
   maxCompareCandidates: 50
+  # How long an open, analyzed incident keeps covering its alert's firings after it opened or last
+  # covered one (a Go duration: 90m, 24h). Past it the incident is stale: no comparison weighs it,
+  # so a firing it would have covered opens a new incident with a fresh RCA, which names it in the
+  # observability.krateo.io/supersedes-stale annotation. A covering firing stamps
+  # observability.krateo.io/last-covered-at on its incident, so a problem that keeps firing stays
+  # covered. "0" disables it: every open incident is compared, however old.
+  incidentCoverWindow: 24h
   # Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the
   # failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the
   # failed one stays Open until a person closes it or asks for a new analysis.
