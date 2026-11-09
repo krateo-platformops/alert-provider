@@ -315,14 +315,14 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 		}
 		match, reason, err := w.verdict(ctx, ns+"/"+alert.Name, alert, candidates, names, rows)
 		if err != nil {
-			w.log.Info(fmt.Sprintf("[compare] %s/%s vs %d incidents: no verdict (%s)", ns, alert.Name, len(candidates), err))
+			logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[compare] %s/%s vs %d incidents: no verdict (%s)", ns, alert.Name, len(candidates), err))
 			noVerdict = err
 		} else {
 			shown := match
 			if shown == "" {
 				shown = "none"
 			}
-			w.log.Info(fmt.Sprintf("[compare] %s/%s vs %d incidents: %s (%s)", ns, alert.Name, len(candidates), shown, reason))
+			logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[compare] %s/%s vs %d incidents: %s (%s)", ns, alert.Name, len(candidates), shown, reason))
 			if match != "" {
 				return byName[match], nil
 			}
@@ -409,12 +409,12 @@ func (w *Writer) patchStatus(ctx context.Context, ns string, incident map[string
 }
 
 // covered logs the incident that covers a firing. The firing writes nothing to it.
-func (w *Writer) covered(ns string, incident map[string]any) {
+func (w *Writer) covered(ctx context.Context, ns string, incident map[string]any) {
 	shown, ok := state(incident)
 	if !ok || shown == "" {
 		shown = "new"
 	}
-	w.log.Info(fmt.Sprintf("[incident] %s/%s: covers the firing (%s)", ns, str(metadata(incident), "name"), shown))
+	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: covers the firing (%s)", ns, str(metadata(incident), "name"), shown))
 }
 
 // openOrCover is one firing: an incident pick chooses covers it, or it creates one. It returns
@@ -431,7 +431,7 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		return nil, err
 	}
 	if target != nil {
-		w.covered(ns, target)
+		w.covered(ctx, ns, target)
 		return nil, nil
 	}
 	name := IncidentName(alert.Name, at)
@@ -449,7 +449,7 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 			return nil, err
 		}
 		// A concurrent firing created it this second.
-		w.log.Info(fmt.Sprintf("[incident] %s/%s: covers the firing (created concurrently)", ns, name))
+		logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: covers the firing (created concurrently)", ns, name))
 		return nil, nil
 	}
 	// Unconditioned: the controller may already have touched the new object, and no other writer
@@ -461,7 +461,7 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 	if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{"status": first}); err != nil {
 		return nil, err
 	}
-	w.log.Info(fmt.Sprintf("[incident] %s/%s: opened", ns, name))
+	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: opened", ns, name))
 	return created, nil
 }
 
@@ -533,8 +533,10 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	ctx, span := tracing.Start(ctx, spanFire, trace.WithAttributes(alertAttrs(alert.Namespace, alert.Name)...))
 	defer span.End()
+	// Bound to incident.fire, not to the reconcile that handed the firing over: its trace is another.
+	log := logging.WithContext(w.log, ctx)
 	if pyfmt.Len(alert.Name) > 63 {
-		w.log.Info(fmt.Sprintf("[incident] alert %s: a name over 63 characters cannot label an Incident; skipping", pyfmt.Repr(alert.Name)))
+		log.Info(fmt.Sprintf("[incident] alert %s: a name over 63 characters cannot label an Incident; skipping", pyfmt.Repr(alert.Name)))
 		return
 	}
 	ns := alert.Namespace
@@ -542,14 +544,14 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 		ns = w.cfg.Namespace
 	}
 	if ns != w.cfg.Namespace {
-		w.log.Info(fmt.Sprintf("[incident] alert %s/%s: outside %s, no incident and no RCA", ns, alert.Name, w.cfg.Namespace))
+		log.Info(fmt.Sprintf("[incident] alert %s/%s: outside %s, no incident and no RCA", ns, alert.Name, w.cfg.Namespace))
 		return
 	}
 	key := ns + "/" + alert.Name
 	w.mu.Lock()
 	if w.firing[key] {
 		w.mu.Unlock()
-		w.log.Info(fmt.Sprintf("[incident] alert %s: the previous evaluation is still running; skipping this firing", key))
+		log.Info(fmt.Sprintf("[incident] alert %s: the previous evaluation is still running; skipping this firing", key))
 		return
 	}
 	w.firing[key] = true
@@ -579,10 +581,10 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	w.mu.Unlock()
 	switch {
 	case compare.IsNoVerdict(err):
-		w.log.Info(fmt.Sprintf("[incident] alert %s: no comparison verdict (%s); the next pass retries", key, err))
+		log.Info(fmt.Sprintf("[incident] alert %s: no comparison verdict (%s); the next pass retries", key, err))
 		return
 	case err != nil: // a failed write loses this firing, not the next one
-		w.log.Info(fmt.Sprintf("[err] alert %s: firing not recorded (%s)", key, err))
+		log.Info(fmt.Sprintf("[err] alert %s: firing not recorded (%s)", key, err))
 		span.SetStatus(codes.Error, err.Error())
 		return
 	}
@@ -606,6 +608,8 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) 
 	ctx, span := tracing.Start(ctx, spanAnalyze, trace.WithAttributes(
 		attrIncidentNamespace.String(ns), attrIncident.String(name)))
 	defer span.End()
+	// Bound to incident.analyze, whichever span started the analysis.
+	log := logging.WithContext(w.log, ctx)
 	var st map[string]any
 	var why string // the last attempt's transient failure, "" when it did not fail
 	for attempt := 0; ; attempt++ {
@@ -619,7 +623,7 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) 
 			break
 		}
 		delay := w.cfg.AnalysisRetryDelay << attempt
-		w.log.Info(fmt.Sprintf("[a2a] %s/%s: %s; retry %d of %d in %s", ns, name, why, attempt+1, w.cfg.AnalysisRetries, delay))
+		log.Info(fmt.Sprintf("[a2a] %s/%s: %s; retry %d of %d in %s", ns, name, why, attempt+1, w.cfg.AnalysisRetries, delay))
 		if !w.sleep(ctx, delay) {
 			break
 		}
@@ -629,7 +633,7 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) 
 	}
 	st["completedAt"] = pyfmt.Isoformat(w.now())
 	if err := w.finish(ctx, ns, name, st); err != nil { // RecoverInterrupted opens it after a restart
-		w.log.Info(fmt.Sprintf("[err] incident %s/%s: analysis not written (%s)", ns, name, err))
+		log.Info(fmt.Sprintf("[err] incident %s/%s: analysis not written (%s)", ns, name, err))
 		span.SetStatus(codes.Error, err.Error())
 		return
 	}
@@ -637,7 +641,7 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) 
 	if st["howToFix"] != nil {
 		fix = "yes"
 	}
-	w.log.Info(fmt.Sprintf("[ok] incident %s/%s: analysis written (howToFix=%s)", ns, name, fix))
+	log.Info(fmt.Sprintf("[ok] incident %s/%s: analysis written (howToFix=%s)", ns, name, fix))
 }
 
 // llmError starts the answer kagent streams when its model call failed.
@@ -656,7 +660,7 @@ func (w *Writer) analysis(ctx context.Context, ns, name, prompt, contextID strin
 		st["error"] = "The analysis failed: " + pyfmt.Cut(err.Error(), 500)
 		return st, "the call failed"
 	}
-	w.log.Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
+	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
 	prose, v2 := report.Parse(raw, ledger)
 	if pyfmt.Strip(prose) != "" {
 		st["report"] = prose

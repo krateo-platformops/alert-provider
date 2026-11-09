@@ -9,6 +9,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
+
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
 	"github.com/krateo-platformops/alert-provider/internal/tracing"
@@ -45,6 +47,7 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 		}
 		span.End()
 	}()
+	log := logging.WithContext(w.log, ctx) // incident.reanalyze's
 	for range writeAttempts {
 		incident, err := w.kube.Get(ctx, ns, name)
 		if code(err) == 404 {
@@ -63,7 +66,7 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 			if err := w.dropRequest(ctx, ns, name); err != nil {
 				return err
 			}
-			w.log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis not run (state %s)", ns, name, s))
+			log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis not run (state %s)", ns, name, s))
 			return nil
 		}
 
@@ -90,11 +93,11 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 			}
 			return err
 		}
-		w.log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis %d requested, analyzing", ns, name, count))
+		log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis %d requested, analyzing", ns, name, count))
 		// The incident is Analyzing: a request left behind by a failure here is dropped as
 		// unanswered on the next reconcile, and the analysis runs either way.
 		if err := w.dropRequest(ctx, ns, name); err != nil {
-			w.log.Info(fmt.Sprintf("[err] incident %s/%s: spec.reanalysis not removed (%s)", ns, name, err))
+			log.Info(fmt.Sprintf("[err] incident %s/%s: spec.reanalysis not removed (%s)", ns, name, err))
 		}
 		span.SetAttributes(attrReanalysis.Int64(count))
 		runCtx := tracing.Detach(run, ctx)

@@ -109,8 +109,8 @@ github.com/klauspost/compress v1.19.0 h1:sXLILfc9jV2QYWkzFOPWStmcUVH2RHEB1JCdY2o
 github.com/klauspost/compress v1.19.0/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/krateo-platformops/plumbing v1.13.0 h1:h3ltdbLMMIuWYXq9UQzPauyYvWz+LuiQE9PX7mb9DbE=
 github.com/krateo-platformops/plumbing v1.13.0/go.mod h1:FYJLKz/CWvDs6tnmsAV5GXRv8DGHKwiIYpN7gdRym2s=
-github.com/krateo-platformops/provider-runtime v1.12.0 h1:3/wDxNpf+hydk6rGS7D+4WS6HQhAHZM1bShgpjEkJiE=
-github.com/krateo-platformops/provider-runtime v1.12.0/go.mod h1:e4XKxwXc4XdJx5q1Cs4H4yCjGlj/lam1dp6HGTWncHs=
+github.com/krateo-platformops/provider-runtime v1.13.0 h1:1/HRLZJQJmDZoRm7nFGqIgHn1DsRJqdYzH8fX6W3Rvs=
+github.com/krateo-platformops/provider-runtime v1.13.0/go.mod h1:FW+MyWHwzh04QzeGfyCmo5ehePWtLqtvriXLa/LnpIg=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
