@@ -45,7 +45,7 @@ func readinessCR() *v1alpha1.Alert {
 		ObjectMeta: metav1.ObjectMeta{Name: notReady, Namespace: ns, UID: types.UID("uid-" + notReady)},
 		Spec: v1alpha1.AlertSpec{MetricRef: &v1alpha1.MetricRef{Name: "k8s-container-ready"}, Aggregation: "max",
 			GroupBy: podKeys, ConsecutiveWindows: 5, Interval: "1m", Threshold: "1", ThresholdType: "below",
-			Message: "A container is not ready."},
+			Description: "A container is not ready."},
 	}
 }
 

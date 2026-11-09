@@ -25,7 +25,7 @@ func metricAlertCR(name, metric, aggregation string, labels map[string]string) *
 	return &v1alpha1.Alert{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID("uid-" + name)},
 		Spec: v1alpha1.AlertSpec{MetricRef: &v1alpha1.MetricRef{Name: metric}, Aggregation: aggregation,
-			Labels: labels, Interval: "1d", Threshold: "6", ThresholdType: "above", Message: "m"},
+			Labels: labels, Interval: "1d", Threshold: "6", ThresholdType: "above", Description: "m"},
 	}
 }
 
@@ -187,7 +187,7 @@ func valueAlertCR(name, aggregation string) *v1alpha1.Alert {
 	return &v1alpha1.Alert{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID("uid-" + name)},
 		Spec: v1alpha1.AlertSpec{Where: acmeLLMRow, Value: costValue, Aggregation: aggregation,
-			Interval: "1d", Threshold: "5", ThresholdType: "above", Message: "m"},
+			Interval: "1d", Threshold: "5", ThresholdType: "above", Description: "m"},
 	}
 }
 

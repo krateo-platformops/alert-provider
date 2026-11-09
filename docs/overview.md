@@ -124,8 +124,8 @@ lets a healthy one mask an unhealthy one (`max` of a readiness gauge is 1 while 
     cited next to the rule in `crd.alert.yaml`.
 - The notification names the group without help: HyperDX 2.35 opens a grouped tile alert's
   notification body with its own `Group: "<group>"` line (`{{#if group}}Group: "{{{group}}}"{{/if}}`),
-  on a firing and a resolve alike, and the Alert's message follows it. The message is pushed
-  exactly as `spec.message`; the webhook log reads HyperDX's line.
+  on a firing and a resolve alike, and the Alert's `spec.description` follows it as written; the
+  webhook log reads HyperDX's line.
 - `spec.consecutiveWindows` (1 to 60, 1 when omitted) is pushed as HyperDX's
   `numConsecutiveWindows`, on any Alert; HyperDX counts it per group.
 
@@ -199,7 +199,7 @@ home namespace, the release namespace (`NAMESPACE`).
   on its status and notifies through the webhook, and that is all: no comparison, no Incident, no
   RCA. incident-agent reads the whole platform, so an analysis of a tenant's alert could quote other
   tenants' data. The incident writer refuses such a firing too, whatever hands it one. An Alert
-  outside home with no `spec.message` gets `<namespace>/<name> threshold crossed.`, without the
+  outside home with no `spec.description` gets `<namespace>/<name> threshold crossed.`, without the
   default's promise of a triage.
 - **What stays home.** Incidents, the `hyperdx-api-token` Secret, the comparison's ModelConfig,
   the seeded default Alerts, the webhook and its Service.

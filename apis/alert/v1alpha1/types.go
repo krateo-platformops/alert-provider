@@ -118,9 +118,9 @@ type AlertSpec struct {
 	// not_between (value in [threshold, thresholdMax], or outside it) and refused with any other.
 	ThresholdMax json.Number `json:"thresholdMax,omitempty"`
 
-	// Message is the notification message. With GroupBy, HyperDX's notification already opens
-	// with a line naming the firing group, so the message is pushed as written.
-	Message string `json:"message,omitempty"`
+	// Description is one plain sentence saying what the Alert catches. The portal shows it, the
+	// investigation reads it as the Alert's intent, and HyperDX sends it as the notification text.
+	Description string `json:"description,omitempty"`
 
 	// GroupBy splits a metric Alert into one series per distinct value of these attribute keys,
 	// each read off the point, or off its resource when the point lacks it (as Labels match).

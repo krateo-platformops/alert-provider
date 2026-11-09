@@ -16,15 +16,15 @@ import (
 // agent whose prompt carries it (incident-agent does; a bare generalist does not).
 //
 // source is the Alert's spec.source: the rows where reads, log records unless it is traces.
-func BuildPrompt(alertName, alertState, where, message, source string) string {
+func BuildPrompt(alertName, alertState, where, description, source string) string {
 	scope := ""
 	if where != "" {
 		scope = "\n\nIt fired on " + compare.Records(source) + " matching `" + where + "`"
 		if source == compare.Traces {
 			scope += " in the traces source (otel_traces)"
 		}
-		if message != "" {
-			scope += " — intent: " + message
+		if description != "" {
+			scope += " — intent: " + description
 		}
 		scope += ". That query is your entry point, and the workload those rows name is what you diagnose."
 	}

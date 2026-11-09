@@ -40,7 +40,7 @@ func alertCR(name, where string, status v1alpha1.AlertStatus) *v1alpha1.Alert {
 	return &v1alpha1.Alert{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID("uid-" + name)},
 		Spec: v1alpha1.AlertSpec{DisplayName: display, Where: where, Interval: "15m", Threshold: "2",
-			ThresholdType: "above", Message: "m"},
+			ThresholdType: "above", Description: "m"},
 		Status: status,
 	}
 }
@@ -637,5 +637,5 @@ func TestProviderRuntimeDoesNotSeeThePause(t *testing.T) {
 
 func compareAlert(name, where string) compare.Alert {
 	return compare.Alert{Name: name, DisplayName: display, Where: where, Interval: "15m", Threshold: "2",
-		ThresholdType: "above", Message: "m"}
+		ThresholdType: "above", Description: "m"}
 }
