@@ -1,11 +1,12 @@
 // Package tracing wires the alert provider's OpenTelemetry trace pipeline. It follows the platform
 // contract snowplow and access-review use:
 //
-//	OTEL_ENABLED                  master switch                 (default false)
-//	OTEL_TRACING_ENABLED          gates tracing (default: the value of OTEL_ENABLED)
-//	OTEL_EXPORTER_OTLP_ENDPOINT   the collector's OTLP/HTTP base URL, e.g. http://<node>:4318
-//	OTEL_SERVICE_NAME             service.name                  (default krateo-alert-provider)
-//	OTEL_TRACES_SAMPLER(_ARG)     the sampler, read by the SDK itself
+//	OTEL_ENABLED                        master switch                 (default false)
+//	OTEL_TRACING_ENABLED                gates tracing (default: the value of OTEL_ENABLED)
+//	OTEL_EXPORTER_OTLP_ENDPOINT         the collector's OTLP/HTTP base URL, e.g. http://<node>:4318
+//	OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  the traces URL, used as-is; wins over the base URL
+//	OTEL_SERVICE_NAME                   service.name                  (default krateo-alert-provider)
+//	OTEL_TRACES_SAMPLER(_ARG)           the sampler, read by the SDK itself
 //
 // GATING. Setup is a no-op unless tracing resolves to enabled. When it is off nothing is
 // registered: the global TracerProvider stays the no-op default, Start returns spans with no
@@ -43,8 +44,12 @@ const (
 	EnvEnabled = "OTEL_ENABLED"
 	// EnvTracingEnabled gates the trace pipeline. Unset, it takes the value of EnvEnabled.
 	EnvTracingEnabled = "OTEL_TRACING_ENABLED"
-	// EnvOTLPEndpoint is the collector's OTLP/HTTP base URL.
+	// EnvOTLPEndpoint is the collector's OTLP/HTTP base URL. The traces path is appended
+	// (tracesEndpointURL).
 	EnvOTLPEndpoint = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	// EnvOTLPTracesEndpoint is the traces-specific OTLP/HTTP URL. When set it wins over
+	// EnvOTLPEndpoint and is used as-is (OTel spec: a per-signal endpoint URL is not modified).
+	EnvOTLPTracesEndpoint = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 	// EnvServiceName overrides service.name.
 	EnvServiceName = "OTEL_SERVICE_NAME"
 
@@ -78,8 +83,8 @@ func Setup(ctx context.Context, build string) (ShutdownFunc, error) {
 		return noop, nil
 	}
 	var opts []otlptracehttp.Option
-	if ep := env.String(EnvOTLPEndpoint, ""); ep != "" {
-		opts = append(opts, otlptracehttp.WithEndpointURL(endpointURL(ep)))
+	if ep, ok := tracesEndpointURL(); ok {
+		opts = append(opts, otlptracehttp.WithEndpointURL(ep))
 	}
 	exp, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
@@ -110,6 +115,23 @@ func NewTracerProvider(exp sdktrace.SpanExporter, opts ...sdktrace.TracerProvide
 	return sdktrace.NewTracerProvider(append([]sdktrace.TracerProviderOption{
 		sdktrace.WithBatcher(redactingExporter{exp}, sdktrace.WithBatchTimeout(5*time.Second)),
 	}, opts...)...)
+}
+
+// tracesEndpointURL is the URL the exporter posts to, and whether one is configured at all (if
+// not, Setup passes no option and the exporter keeps its own default).
+//
+// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, when set, is returned verbatim. Without this branch the
+// WithEndpointURL option built from the generic variable would override it, since exporter
+// options take precedence over the environment, and the generic variable would win against the
+// OTel spec. Otherwise OTEL_EXPORTER_OTLP_ENDPOINT goes through endpointURL.
+func tracesEndpointURL() (string, bool) {
+	if ep := env.String(EnvOTLPTracesEndpoint, ""); ep != "" {
+		return ep, true
+	}
+	if ep := env.String(EnvOTLPEndpoint, ""); ep != "" {
+		return endpointURL(ep), true
+	}
+	return "", false
 }
 
 // endpointURL is the traces URL for the generic OTLP base endpoint. WithEndpointURL takes its

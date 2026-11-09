@@ -37,7 +37,7 @@ func spec(obj map[string]any) map[string]any {
 // Its span is incident.reanalyze; the RCA it starts is incident.analyze, a new trace linked to it
 // (tracing.Detach) that runs under run, so it outlives the reconcile and stops with run.
 func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error) {
-	ctx, span := tracing.Start(ctx, "incident.reanalyze", trace.WithAttributes(
+	ctx, span := tracing.Start(ctx, spanReanalyze, trace.WithAttributes(
 		attrIncidentNamespace.String(ns), attrIncident.String(name)))
 	defer func() {
 		if err != nil {

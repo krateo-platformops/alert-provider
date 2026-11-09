@@ -348,7 +348,7 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 // verdict holds, the model call (a client span). Neither the prompt nor the reason is recorded.
 func (w *Writer) verdict(ctx context.Context, key string, alert Alert, candidates []map[string]any, names []string,
 	rows func() ([]compare.Row, error)) (match, reason string, err error) {
-	ctx, span := tracing.Start(ctx, "incident.compare", trace.WithAttributes(
+	ctx, span := tracing.Start(ctx, spanCompare, trace.WithAttributes(
 		append(alertAttrs(alert.Namespace, alert.Name), attrCandidates.Int(len(candidates)))...))
 	defer func() {
 		if err != nil {
@@ -531,7 +531,7 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 // Its span is incident.fire. The Alert controller passes a context detached from its reconcile
 // (tracing.Detach), so the span is a new trace linked to the reconcile's alert.observe.
 func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
-	ctx, span := tracing.Start(ctx, "incident.fire", trace.WithAttributes(alertAttrs(alert.Namespace, alert.Name)...))
+	ctx, span := tracing.Start(ctx, spanFire, trace.WithAttributes(alertAttrs(alert.Namespace, alert.Name)...))
 	defer span.End()
 	if pyfmt.Len(alert.Name) > 63 {
 		w.log.Info(fmt.Sprintf("[incident] alert %s: a name over 63 characters cannot label an Incident; skipping", pyfmt.Repr(alert.Name)))
@@ -603,7 +603,7 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 // Its span is incident.analyze, with a client span per A2A call; neither carries the prompt or
 // the answer.
 func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) {
-	ctx, span := tracing.Start(ctx, "incident.analyze", trace.WithAttributes(
+	ctx, span := tracing.Start(ctx, spanAnalyze, trace.WithAttributes(
 		attrIncidentNamespace.String(ns), attrIncident.String(name)))
 	defer span.End()
 	var st map[string]any
