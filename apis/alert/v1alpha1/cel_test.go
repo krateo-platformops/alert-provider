@@ -140,6 +140,13 @@ func TestTheGroupRulesAdmitGroupedMetricAlertsOnly(t *testing.T) {
 			"groupBy splits a metric's series; it requires metricRef"},
 		{"groupBy with ratio", "interval: 5m\nthreshold: 0.01\nthresholdType: above\nmetricRef: {name: m}\naggregation: sum\n" +
 			"labels: {failed: \"true\"}\nratio: {labels: {}}\ngroupBy: [service.name]\n", "groupBy and ratio are mutually exclusive"},
+		// A grouped increase is refused until HyperDX's rendering of it is proven live.
+		{"groupBy with increase", "interval: 5m\nthreshold: 1\nthresholdType: above\nmetricRef: {name: m}\naggregation: increase\n" +
+			"groupBy: [k8s.pod.name]\n", "groupBy does not support aggregation increase yet"},
+		{"increase without groupBy", "interval: 5m\nthreshold: 1\nthresholdType: above\nmetricRef: {name: m}\naggregation: increase\n", ""},
+		{"a grouped gauge max", metric + "groupBy: [k8s.namespace.name, k8s.pod.name]\n", ""},
+		{"a grouped sum", "interval: 5m\nthreshold: 1\nthresholdType: above\nmetricRef: {name: m}\naggregation: sum\n" +
+			"groupBy: [k8s.pod.name]\n", ""},
 		{"a key that is not an attribute name", metric + "groupBy: [\"k8s.pod.name) OR (1\"]\n", "should match"},
 		{"a key with a quote", metric + "groupBy: [\"a'b\"]\n", "should match"},
 		// The tile aliases each key as a backtick-quoted identifier: the pattern keeps both the quote

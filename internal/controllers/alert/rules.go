@@ -107,6 +107,9 @@ func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Selec
 	default:
 		return hyperdx.Select{}, fmt.Sprintf("aggregation %q is not one of avg, max, min, sum, p95, increase.", spec.Aggregation)
 	}
+	if why := groupedRefusal(spec, m); why != "" {
+		return hyperdx.Select{}, why
+	}
 	if spec.Ratio == nil {
 		return sel, ""
 	}
@@ -189,6 +192,35 @@ func Exceeds(value float64, thresholdType string, threshold, thresholdMax any) (
 		return value < t || value > upper, hasUpper
 	}
 	return false, false
+}
+
+// groupedRefusal is why a grouped metric Alert cannot be evaluated, or "" if it can. HyperDX 2.35
+// renders a tile's groupBy as a plain select list only for a gauge and for a sum without
+// increase; the other two paths are refused until each is proven live:
+//
+//   - increase (a sum): the group is pasted, as one string, into the TopGroups ranking's
+//     tuple(...) and a toString(...) null filter (common-utils/src/core/renderChartConfig.ts
+//     :1949-2007), where HyperDX's own comment calls an alias a syntax error and several keys
+//     do not render. The CRD refuses the pair too.
+//   - a histogram (p95): the group is packed into one array literal, [groupBy] AS group
+//     (common-utils/src/core/histogram.ts:191), so the notification names a single "group"
+//     column. The metric type is the Metric's, which admission cannot see.
+func groupedRefusal(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) string {
+	if len(spec.GroupBy) == 0 {
+		return ""
+	}
+	if spec.Aggregation == v1alpha1.AggregationIncrease {
+		return "groupBy does not support aggregation 'increase' yet: HyperDX 2.35 renders the group into " +
+			"tuple() and toString() (renderChartConfig.ts:1949-2007), where an alias is a syntax error and " +
+			"several keys do not render. On a counter, aggregation 'sum' totals the same per-interval " +
+			"deltas (renderChartConfig.ts:2017-2030) and groups."
+	}
+	if m.Type == v1alpha1.MetricTypeHistogram {
+		return fmt.Sprintf("groupBy on a histogram metric is not supported yet: %s is a histogram, and HyperDX 2.35 "+
+			"packs a histogram's groups into one array column (histogram.ts:191). Group a gauge or a sum, "+
+			"or drop groupBy.", m.MetricName)
+	}
+	return ""
 }
 
 // GroupBy are the keys a tile groups by, each aliased as itself: the key's value on the point,

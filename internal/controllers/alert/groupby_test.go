@@ -203,6 +203,80 @@ func TestAChangedGroupByRewritesTheTileInPlace(t *testing.T) {
 	eq(t, "regrouped", h.api.TileOf(h.byName()[notReady])["groupBy"], podGroupBy)
 }
 
+// --- the grouped paths HyperDX 2.35 cannot render, refused until proven ---
+
+var latencyHistogram = v1alpha1.MetricSpec{MetricName: "http.server.duration", Type: v1alpha1.MetricTypeHistogram}
+
+func TestOnlyAGaugeOrANonIncreaseSumIsGrouped(t *testing.T) {
+	grouped := v1alpha1.AlertSpec{GroupBy: podKeys}
+	for _, c := range []struct {
+		agg     string
+		metric  v1alpha1.MetricSpec
+		refused string // a substring of the refusal; empty when admitted
+	}{
+		{"max", readyMetric, ""},
+		{"p95", readyMetric, ""},
+		{"sum", costMetric, ""},
+		{"avg", costMetric, ""},
+		{"increase", costMetric, "groupBy does not support aggregation 'increase' yet"},
+		{"p95", latencyHistogram, "groupBy on a histogram metric is not supported yet: http.server.duration is a histogram"},
+	} {
+		spec := grouped
+		spec.Aggregation = c.agg
+		sel, why := MetricSelect(spec, c.metric)
+		if c.refused == "" {
+			if why != "" {
+				t.Errorf("%s on a %s: refused: %s", c.agg, c.metric.Type, why)
+			}
+			eq(t, c.agg+" groups", sel.GroupBy, GroupBy(podKeys))
+			continue
+		}
+		if !strings.Contains(why, c.refused) {
+			t.Errorf("%s on a %s: want a refusal containing %q, got %q", c.agg, c.metric.Type, c.refused, why)
+		}
+	}
+	// Ungrouped, both are what they were.
+	for _, c := range []struct {
+		agg    string
+		metric v1alpha1.MetricSpec
+	}{{"increase", costMetric}, {"p95", latencyHistogram}} {
+		if _, why := MetricSelect(v1alpha1.AlertSpec{Aggregation: c.agg}, c.metric); why != "" {
+			t.Errorf("ungrouped %s on a %s: refused: %s", c.agg, c.metric.Type, why)
+		}
+	}
+}
+
+// A grouped histogram Alert is Invalid and creates nothing in HyperDX: no dashboard, no alert.
+func TestAGroupedHistogramAlertIsInvalidAndPushesNothing(t *testing.T) {
+	a := readinessCR()
+	a.Spec.MetricRef.Name, a.Spec.Aggregation, a.Spec.ThresholdType = "latency", "p95", "above"
+	h := newHarness(t, a)
+	h.addMetric(metricCR("latency", latencyHistogram))
+	h.pass(2)
+	st := h.status(notReady)
+	eq(t, "phase", st.Phase, "Invalid")
+	if !strings.Contains(st.Error, "groupBy on a histogram metric is not supported yet") {
+		t.Errorf("error %q", st.Error)
+	}
+	eq(t, "no alert", len(h.api.All("alerts")), 0)
+	eq(t, "no dashboard", len(h.api.All("dashboards")), 0)
+
+	// Ungrouped, the same histogram Alert is pushed as before.
+	h.edit(notReady, func(a *v1alpha1.Alert) { a.Spec.GroupBy = nil })
+	h.pass(2)
+	eq(t, "phase", h.status(notReady).Phase, "Synced")
+	live := h.byName()[notReady]
+	if live == nil {
+		t.Fatal("no HyperDX alert")
+	}
+	tile := h.api.TileOf(live)
+	if g, ok := tile["groupBy"]; ok {
+		t.Errorf("an ungrouped tile has groupBy %v", g)
+	}
+	eq(t, "select", tile["select"], []any{map[string]any{"aggFn": "quantile", "level": 0.95, "metricName": "http.server.duration",
+		"metricType": "histogram", "valueExpression": "Value", "where": "", "whereLanguage": "sql"}})
+}
+
 // A groupBy a person changes on the tile in HyperDX is put back.
 func TestALiveGroupByEditIsADrift(t *testing.T) {
 	h := readinessHarness(t, t0)

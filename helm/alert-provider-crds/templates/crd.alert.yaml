@@ -73,6 +73,12 @@ spec:
                   message: "groupBy splits a metric's series; it requires metricRef"
                 - rule: "!has(self.groupBy) || !has(self.ratio)"
                   message: "groupBy and ratio are mutually exclusive: a grouped ratio would need both its totals grouped alike"
+                # HyperDX 2.35 pastes a grouped increase's groupBy, as one string, into the TopGroups
+                # ranking's tuple() and a toString() null filter
+                # (common-utils/src/core/renderChartConfig.ts:1949-2007): an alias there is a syntax
+                # error by HyperDX's own comment, and several keys do not render. Refused until proven.
+                - rule: "!has(self.groupBy) || !has(self.aggregation) || self.aggregation != 'increase'"
+                  message: "groupBy does not support aggregation increase yet: HyperDX 2.35 renders the group into tuple() and toString() (renderChartConfig.ts:1949-2007), where an alias is a syntax error and several keys do not render. On a counter, aggregation sum totals the same per-interval deltas and groups"
               properties:
                 displayName:
                   type: string
@@ -256,7 +262,8 @@ spec:
                     evaluates each series on its own, counts consecutiveWindows per series, and
                     resolves a series on one interval within the threshold; a series that stops
                     reporting is never resolved by HyperDX, so status.groups (computed by the
-                    provider) is the per-series truth. Metric alerts only; refused with ratio. A
+                    provider) is the per-series truth. Metric alerts only; refused with ratio and
+                    with aggregation increase, and a histogram Metric's Alert is Invalid with it. A
                     key that is a column name of HyperDX's metric query (Attributes, Value,
                     ServiceName, ...) is refused: the tile aliases each key as itself.
                 consecutiveWindows:

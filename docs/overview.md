@@ -88,6 +88,20 @@ lets a healthy one mask an unhealthy one (`max` of a readiness gauge is 1 while 
 - The tile stays a line chart: the v2 API takes no groupBy on a number tile. Adding, changing or
   removing `groupBy` rewrites the tile in place and keeps the HyperDX alert. So does the upgrade
   from 0.2.64, whose tiles carry the expressions unaliased: one dashboard update, same alert.
+- **What can be grouped.** HyperDX 2.35 renders a tile's groupBy as a plain select list only for a
+  gauge (any aggregation) and for a sum with `avg`, `max`, `min`, `sum` or `p95`. Two other paths
+  are refused until each is proven live (references are to `@hyperdx/api@2.35.0`,
+  `packages/common-utils/src/core/`):
+  - `aggregation: increase` with `groupBy` is refused at admission, and again by the reconciler.
+    HyperDX pastes a grouped increase's groupBy, as one string, into its TopGroups ranking's
+    `tuple(...)` and a `toString(...)` null filter (`renderChartConfig.ts:1949-2007`). HyperDX's
+    own comment there calls an alias a syntax error, and several keys do not render. On a counter,
+    `aggregation: sum` totals the same per-interval deltas (`sum(Rate)`,
+    `renderChartConfig.ts:2017-2030`) without that ranking, and it groups.
+  - `groupBy` on a histogram Metric is refused by the reconciler, with `phase: Invalid` and nothing
+    pushed. Admission cannot see it, because the type is the Metric's. HyperDX packs a histogram's
+    groups into one array column, `[groupBy] AS group` (`histogram.ts:191`), so the notification
+    would name a single `group` column, and the alias would sit inside an array literal.
 - Admission refuses `groupBy` without `metricRef`, with `ratio`, and with more than 5 keys, a
   duplicate key, or a key that is not an attribute name.
 - Admission also refuses a key that is a column name of HyperDX's metric query. Examples are
