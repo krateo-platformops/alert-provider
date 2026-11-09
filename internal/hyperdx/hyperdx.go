@@ -24,6 +24,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/httpx"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 // DefaultWebhookBody is the generic webhook's body. A generic webhook body can use only {{title}},
@@ -58,9 +59,11 @@ type Client struct {
 	cached     bool
 }
 
-// New returns a client of the HyperDX API at url.
+// New returns a client of the HyperDX API at url. With tracing on, every call is a client span
+// (tracing.WrapTransport); the access key rides a header, which no span records.
 func New(url, accessKey string) *Client {
-	return &Client{url: strings.TrimRight(url, "/"), key: accessKey, http: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{url: strings.TrimRight(url, "/"), key: accessKey,
+		http: &http.Client{Timeout: 30 * time.Second, Transport: tracing.WrapTransport(nil)}}
 }
 
 func unwrap(v any) any {

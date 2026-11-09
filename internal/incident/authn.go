@@ -15,6 +15,7 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
 	"github.com/krateo-platformops/alert-provider/internal/httpx"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 // ServiceJWT is the alert provider's service identity, for intra-service auth. The alert-to-RCA
@@ -36,7 +37,11 @@ type ServiceJWT struct {
 	exp   float64
 }
 
-var authnHTTP = &http.Client{Timeout: 15 * time.Second}
+// authnHTTP is the authn client, with a client span per call when tracing is on. The projected
+// token and the JWT ride the Authorization header and the body, which no span records.
+func authnHTTP() *http.Client {
+	return &http.Client{Timeout: 15 * time.Second, Transport: tracing.WrapTransport(nil)}
+}
 
 // Get is the JWT, cached until shortly before its own expiry, or "" when the exchange is disabled
 // or fails: the caller then proceeds unauthenticated, so an auth hiccup never breaks the RCA.
@@ -72,7 +77,7 @@ func (s *ServiceJWT) exchange(ctx context.Context, url string) (string, float64,
 		return "", 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(sa)))
-	resp, err := authnHTTP.Do(req)
+	resp, err := authnHTTP().Do(req)
 	if err != nil {
 		return "", 0, err
 	}

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/controllers/reanalysis"
 	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
 	"github.com/krateo-platformops/alert-provider/internal/incident"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 	"github.com/krateo-platformops/alert-provider/internal/webhook"
 )
 
@@ -77,10 +79,44 @@ func main() {
 	log := logging.NewSlogLogger(*slog.New(handler))
 	ctrl.SetLogger(logr.FromSlogHandler(handler))
 
-	if err := run(log); err != nil {
+	// Before anything that makes an HTTP client or a span. Off (the default) it registers nothing.
+	shutdown, err := tracing.Setup(context.Background(), buildVersion())
+	if err != nil {
+		log.Error(err, "cannot set up tracing")
+		os.Exit(1)
+	}
+	err = run(log)
+	flush(shutdown)
+	if err != nil {
 		log.Error(err, "alert-provider stopped")
 		os.Exit(1)
 	}
+}
+
+// flush exports the spans still batched, bounded so a dead collector cannot hold the exit.
+func flush(shutdown tracing.ShutdownFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = shutdown(ctx)
+}
+
+// buildVersion is service.version: the release the chart passes in SERVICE_VERSION (the image
+// tag), else the module version or the VCS revision the binary was built from, else "dev".
+func buildVersion() string {
+	if v := getenv("SERVICE_VERSION", ""); v != "" {
+		return v
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && s.Value != "" {
+				return s.Value
+			}
+		}
+	}
+	return "dev"
 }
 
 func run(log logging.Logger) error {
@@ -232,6 +268,12 @@ func runBootstrap() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	shutdown, err := tracing.Setup(context.Background(), buildVersion())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer flush(shutdown)
 	if err := bootstrap.Run(context.Background(), cfg, kube); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

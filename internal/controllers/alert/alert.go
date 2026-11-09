@@ -44,6 +44,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
 	"github.com/krateo-platformops/alert-provider/internal/incident"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 // Finalizer guards each Alert so its HyperDX alert and dashboard are removed before it is deleted.
@@ -113,7 +114,7 @@ func Setup(mgr ctrl.Manager, o Options) error {
 		Named(name).
 		WithOptions(opts).
 		For(&v1alpha1.Alert{}, builder.WithPredicates(changed)).
-		Complete(ratelimiter.New(name, r, o.Controller.GlobalRateLimiter))
+		Complete(ratelimiter.New(name, traced{r}, o.Controller.GlobalRateLimiter))
 }
 
 // changed lets through what a person changes: the spec, the annotations and the deletion. The
@@ -333,7 +334,13 @@ func (e *external) specDrift(a *v1alpha1.Alert, err error) error {
 // created by Update.
 //
 // A pass that finds the alert ALERT fires it, here, since it is the one step every pass runs.
-func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
+func (e *external) Observe(ctx context.Context, mg resource.Managed) (obs reconciler.ExternalObservation, err error) {
+	ctx, done := action(ctx, "alert.observe", mg)
+	defer func() { done(err) }()
+	return e.observe(ctx, mg)
+}
+
+func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
 	a, ok := mg.(*v1alpha1.Alert)
 	if !ok {
 		return reconciler.ExternalObservation{}, errNotAlert
@@ -432,7 +439,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		if a.Aggregated() {
 			live, liveSrc, found, err := e.hdx.TileSelect(ctx, e.plan.dashboardID)
 			if err != nil {
-				e.firings.start(a, e.rows, st)
+				e.firings.start(ctx, a, e.rows, st)
 				// Ready=Available above mirrors HyperDX's live state, read in this call; only the
 				// tile read failed, so it stands (provider-runtime v1.8.0).
 				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
@@ -441,7 +448,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		} else {
 			liveWhere, found, err := e.hdx.TileWhere(ctx, e.plan.dashboardID)
 			if err != nil {
-				e.firings.start(a, e.rows, st)
+				e.firings.start(ctx, a, e.rows, st)
 				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
 			}
 			e.plan.where = found && liveWhere != a.Spec.Where
@@ -463,7 +470,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 	e.plan.drift = hyperdx.AlertDrift(alert, hyperdxName(e.home, a), fields(e.home, a))
 
-	e.firings.start(a, e.rows, st)
+	e.firings.start(ctx, a, e.rows, st)
 	if e.plan.deleteShared != "" || e.plan.where || len(e.plan.drift) > 0 {
 		return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false, Diff: e.plan.String()}, nil
 	}
@@ -527,8 +534,19 @@ func (e *external) Create(ctx context.Context, mg resource.Managed) error {
 	return nil
 }
 
-// Update deletes a shared alert, creates the dashboard and alert or pushes the spec onto them.
-func (e *external) Update(ctx context.Context, mg resource.Managed) error {
+// Update deletes a shared alert, creates the dashboard and alert or pushes the spec onto them. Its
+// span is alert.create on the pass that creates them, alert.update otherwise.
+func (e *external) Update(ctx context.Context, mg resource.Managed) (err error) {
+	name := "alert.update"
+	if e.plan.create && e.plan.invalid == "" {
+		name = "alert.create"
+	}
+	ctx, done := action(ctx, name, mg)
+	defer func() { done(err) }()
+	return e.update(ctx, mg)
+}
+
+func (e *external) update(ctx context.Context, mg resource.Managed) error {
 	a, ok := mg.(*v1alpha1.Alert)
 	if !ok {
 		return errNotAlert
@@ -571,7 +589,7 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	a.Status.State, a.Status.Phase, a.Status.Error = st, v1alpha1.PhaseSynced, ""
 	a.SetConditions(prv1.Available())
 	e.log.Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", hyperdxName(e.home, a), a.Status.HyperdxAlertID, st))
-	e.firings.start(a, e.rows, st)
+	e.firings.start(ctx, a, e.rows, st)
 	return nil
 }
 
@@ -606,11 +624,13 @@ func (e *external) push(ctx context.Context, a *v1alpha1.Alert) error {
 
 // Delete removes the HyperDX alert and dashboard, best-effort: a failure still lets the Alert go,
 // so a delete is never wedged on HyperDX.
-func (e *external) Delete(ctx context.Context, mg resource.Managed) error {
+func (e *external) Delete(ctx context.Context, mg resource.Managed) (err error) {
 	a, ok := mg.(*v1alpha1.Alert)
 	if !ok {
 		return errNotAlert
 	}
+	ctx, done := action(ctx, "alert.delete", mg)
+	defer func() { done(err) }()
 	if id := a.Status.HyperdxAlertID; id != "" {
 		_ = e.hdx.DeleteAlert(ctx, id)
 	}
@@ -644,7 +664,12 @@ type firings struct {
 // fire starts the incident writer on a firing, off the reconcile: a comparison takes seconds, a
 // new incident's RCA minutes. Its records are the alert's `where` rows in source (its logs or its
 // traces), one line per distinct record.
-func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) {
+//
+// ctx is the reconcile's, which ends with it: the firing runs under f.ctx, the process's, so the
+// reconcile timeout never cuts an RCA short and a shutdown still stops it. Its incident.fire span
+// is a new trace linked to the alert.observe span (tracing.Detach), not a child of a span that
+// ends minutes before it.
+func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[string]any, state string) {
 	if state != "ALERT" {
 		return
 	}
@@ -684,7 +709,8 @@ func (f *firings) start(a *v1alpha1.Alert, source map[string]any, state string) 
 	records := func(ctx context.Context, where string, seconds int) ([]compare.Row, error) {
 		return hdx.RecordCounts(ctx, sourceID, where, seconds, group)
 	}
-	f.run(func() { f.fire(f.ctx, alert, records) })
+	fireCtx := tracing.Detach(f.ctx, ctx)
+	f.run(func() { f.fire(fireCtx, alert, records) })
 }
 
 func (f *firings) forget(uid types.UID) {
