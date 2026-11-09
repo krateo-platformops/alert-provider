@@ -56,3 +56,4 @@ timestamp: 2026-08-20T00:00:00Z
 ## 2026-11-09
 - The Alerts' passes of one poll interval share one read of HyperDX's alerts list instead of one each, and any write the controller makes to the alerts or dashboards drops it. A mirrored `state` is at most one interval old.
 - A HyperDX `429` defers the pass instead of failing it: provider-runtime's rate-limit governor holds every Alert's calls until the `Retry-After` (a poll interval without one, 10 minutes at most), with `Synced=False/ReconcileDeferred`; `status.phase` is left as it was.
+- A log record written inside traced work carries the `trace_id` and `span_id` of the span it ran in (provider-runtime v1.13.0); lines outside any span carry neither (see configuration, Tracing).

@@ -96,6 +96,6 @@ func (w *webhook) reset(ctx context.Context, hdx *hyperdx.Client, a *v1alpha1.Al
 			return err
 		}
 	}
-	w.log.Info(fmt.Sprintf("[reconciler] webhook %s was recreated: %d Alerts rebuild their HyperDX alerts on it", w.name, len(active)))
+	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[reconciler] webhook %s was recreated: %d Alerts rebuild their HyperDX alerts on it", w.name, len(active)))
 	return nil
 }

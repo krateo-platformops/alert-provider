@@ -60,7 +60,7 @@ func (s *ServiceJWT) Get(ctx context.Context) string {
 	}
 	jwt, exp, err := s.exchange(ctx, url)
 	if err != nil {
-		s.Log.Info(fmt.Sprintf("[authn] service-JWT exchange failed (%s); continuing without a JWT", err))
+		logging.WithContext(s.Log, ctx).Info(fmt.Sprintf("[authn] service-JWT exchange failed (%s); continuing without a JWT", err))
 		return ""
 	}
 	s.token, s.exp = jwt, exp

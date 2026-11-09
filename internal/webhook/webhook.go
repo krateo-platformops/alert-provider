@@ -39,7 +39,8 @@ func Handler(log logging.Logger) http.Handler {
 			if err != nil {
 				payload = map[string]any{"raw": string(raw)}
 			}
-			incident.Process(log, payload)
+			// Bound to the request's server span, when tracing is on.
+			incident.Process(logging.WithContext(log, r.Context()), payload)
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte("accepted"))
 		default:

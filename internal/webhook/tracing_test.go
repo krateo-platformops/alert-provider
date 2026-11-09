@@ -87,3 +87,14 @@ func TestOffTheHandlerIsUnwrapped(t *testing.T) {
 		t.Errorf("Traced wrapped while off: %T", got)
 	}
 }
+
+// A notification's line names the POST's Server span.
+// MUTATION: handing Process the unbound log fails this.
+func TestTheNotificationLineNamesThePOSTSpan(t *testing.T) {
+	rec := tracingtest.Install(t)
+	logs := tracingtest.CaptureLogs(t)
+	if code := serve(Traced(Handler(logs.Logger)), http.MethodPost, "/webhook"); code != 202 {
+		t.Fatalf("POST %d", code)
+	}
+	logs.One("[webhook]").In(t, rec.One("POST /webhook"))
+}

@@ -78,6 +78,13 @@ exported without its query string, fragment or userinfo, and a Server span witho
 gets its client span, with no trace header. The Kubernetes client is not instrumented, so watches
 and cache reads make no spans.
 
-Log records carry no trace or span id yet: that correlation arrives with the provider-runtime
-release that gives the logger the request context. The logs are unchanged by tracing.
+A log record written inside traced work carries `trace_id` and `span_id`, the span it ran in
+(provider-runtime v1.13.0's `logging.WithContext`). It names the innermost span open when it was
+written: a line logged during `alert.observe` names `alert.observe`, not `alert.reconcile`, and a
+firing's or an RCA's lines name their own `incident.fire` or `incident.analyze`, in their own
+trace, not the reconcile that started them. provider-runtime's own per-reconcile lines name
+`alert.reconcile`. Lines written outside any span carry neither: startup, the default-Alert
+seeding, the sweep of incidents a restart left `Analyzing`, controller-runtime's own lines (logr
+carries no context), and the `hyperdx-key-bootstrap` Job, which prints plain text with tracing
+off. With tracing off no record carries either.
 

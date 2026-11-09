@@ -247,6 +247,8 @@ type external struct {
 	alerts    *alertsList
 	throttled error // Connect's calls were refused for the rate limit
 	firings   *firings
+	// log is bound to no context: each line binds the ctx of the span it runs in
+	// (logging.WithContext), so it carries that span's trace_id and span_id.
 	log       logging.Logger
 	sources   []map[string]any // HyperDX's, every kind
 	webhookID string
@@ -368,7 +370,7 @@ func (e *external) throttle(ctx context.Context, a *v1alpha1.Alert, err error) (
 	e.plan = plan{throttled: err}
 	trace.SpanFromContext(ctx).SetAttributes(attrThrottled.Bool(true))
 	wait = min(wait, MaxThrottle)
-	e.log.Info(fmt.Sprintf("[reconciler] Alert %s: HyperDX is rate-limiting the provider (%d); the pass is deferred %s",
+	logging.WithContext(e.log, ctx).Info(fmt.Sprintf("[reconciler] Alert %s: HyperDX is rate-limiting the provider (%d); the pass is deferred %s",
 		hyperdxName(e.home, a), httpx.Code(err), wait))
 	return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: false,
 		Diff: "deferred: HyperDX rate-limited the pass"}, true
@@ -385,9 +387,9 @@ func failed(a *v1alpha1.Alert, err error) error {
 
 // specDrift records a push that failed: the live alert does not match the Alert. The state is
 // still mirrored, so a firing alert stays visible.
-func (e *external) specDrift(a *v1alpha1.Alert, err error) error {
+func (e *external) specDrift(ctx context.Context, a *v1alpha1.Alert, err error) error {
 	a.Status.Phase, a.Status.Error = v1alpha1.PhaseSpecDrift, pyfmt.Cut(err.Error(), 300)
-	e.log.Info(fmt.Sprintf("[reconciler] Alert %s: spec push failed, phase=SpecDrift (%s)", hyperdxName(e.home, a), err))
+	logging.WithContext(e.log, ctx).Info(fmt.Sprintf("[reconciler] Alert %s: spec push failed, phase=SpecDrift (%s)", hyperdxName(e.home, a), err))
 	return err
 }
 
@@ -523,7 +525,7 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 				}
 				// Ready=Available above mirrors HyperDX's live state, read in this call; only the
 				// tile read failed, so it stands (provider-runtime v1.8.0).
-				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
+				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(ctx, a, err))
 			}
 			e.plan.where = found && hyperdx.SelectDrift(live, liveSrc, e.tileSource, e.sel)
 		} else {
@@ -533,7 +535,7 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 				if obs, ok := e.throttle(ctx, a, err); ok {
 					return obs, nil
 				}
-				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(a, err))
+				return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.specDrift(ctx, a, err))
 			}
 			e.plan.where = found && liveWhere != a.Spec.Where
 			// A tile that aggregated (an Alert switched back to counting), or that reads the other
@@ -612,7 +614,7 @@ func (e *external) release(ctx context.Context, a *v1alpha1.Alert, byID map[stri
 		delete(byID, id)
 	}
 	a.Status.HyperdxAlertID, a.Status.Phase = "", v1alpha1.PhasePending
-	e.log.Info(fmt.Sprintf("[reconciler] Alert %s: released shared hyperdx %s", self, id))
+	logging.WithContext(e.log, ctx).Info(fmt.Sprintf("[reconciler] Alert %s: released shared hyperdx %s", self, id))
 	return nil
 }
 
@@ -645,7 +647,7 @@ func (e *external) update(ctx context.Context, mg resource.Managed) error {
 	}
 	if why := e.plan.invalid; why != "" {
 		a.Status.Phase, a.Status.Error = v1alpha1.PhaseInvalid, why
-		e.log.Info(fmt.Sprintf("[reconciler] Alert %s refused: %s", hyperdxName(e.home, a), why))
+		logging.WithContext(e.log, ctx).Info(fmt.Sprintf("[reconciler] Alert %s refused: %s", hyperdxName(e.home, a), why))
 		return nil
 	}
 	if id := e.plan.deleteShared; id != "" {
@@ -680,7 +682,7 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	// this pass's status write is the one that says the Alert is Synced.
 	a.Status.State, a.Status.Phase, a.Status.Error = st, v1alpha1.PhaseSynced, ""
 	a.SetConditions(prv1.Available())
-	e.log.Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", hyperdxName(e.home, a), a.Status.HyperdxAlertID, st))
+	logging.WithContext(e.log, ctx).Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", hyperdxName(e.home, a), a.Status.HyperdxAlertID, st))
 	e.firings.start(ctx, a, e.rows, st)
 	return nil
 }
@@ -697,19 +699,19 @@ func (e *external) push(ctx context.Context, a *v1alpha1.Alert) error {
 	var changed []string
 	if e.plan.where {
 		if err := e.hdx.UpdateTile(ctx, e.plan.dashboardID, dashboardName(e.home, a), e.tileSource, e.sel, tile); err != nil {
-			return e.specDrift(a, err)
+			return e.specDrift(ctx, a, err)
 		}
 		changed = append(changed, "where")
 	}
 	if len(e.plan.drift) > 0 {
 		if _, err := e.hdx.UpdateAlert(ctx, e.plan.alertID, hyperdxName(e.home, a), e.plan.dashboardID, tile, e.webhookID, fields(e.home, a)); err != nil {
-			return e.specDrift(a, err)
+			return e.specDrift(ctx, a, err)
 		}
 		changed = append(changed, e.plan.drift...)
 	}
 	a.Status.Phase, a.Status.Error = v1alpha1.PhaseSynced, ""
 	if len(changed) > 0 {
-		e.log.Info(fmt.Sprintf("[reconciler] Alert %s: pushed %s to hyperdx %s", hyperdxName(e.home, a), strings.Join(changed, ", "), e.plan.alertID))
+		logging.WithContext(e.log, ctx).Info(fmt.Sprintf("[reconciler] Alert %s: pushed %s to hyperdx %s", hyperdxName(e.home, a), strings.Join(changed, ", "), e.plan.alertID))
 	}
 	return nil
 }
@@ -731,7 +733,7 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) (err error) 
 	}
 	a.Status.HyperdxAlertID, a.Status.HyperdxDashboardID = "", ""
 	e.firings.forget(a.UID)
-	e.log.Info(fmt.Sprintf("[reconciler] finalized Alert %s (removed HyperDX alert+dashboard)", hyperdxName(e.home, a)))
+	logging.WithContext(e.log, ctx).Info(fmt.Sprintf("[reconciler] finalized Alert %s (removed HyperDX alert+dashboard)", hyperdxName(e.home, a)))
 	return nil
 }
 
@@ -772,15 +774,17 @@ func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[strin
 	}
 	f.last[a.UID] = time.Now()
 	f.mu.Unlock()
+	// Its lines are the action span's (alert.observe or alert.create): ctx carries it.
+	log := logging.WithContext(f.log, ctx)
 	if a.Paused() {
-		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", hyperdxName(f.home, a)))
+		log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", hyperdxName(f.home, a)))
 		return
 	}
 	// The RCA agent reads the whole platform, so its analysis of a tenant's alert could quote other
 	// tenants' data: an Alert outside the home namespace is the ALERT state mirrored on it and
 	// HyperDX's notification, never a comparison, an Incident or an RCA.
 	if a.Namespace != f.home {
-		f.log.Info(fmt.Sprintf("[reconciler] Alert %s is outside %s; no incident (only %s Alerts are root-caused)", hyperdxName(f.home, a), f.home, f.home))
+		log.Info(fmt.Sprintf("[reconciler] Alert %s is outside %s; no incident (only %s Alerts are root-caused)", hyperdxName(f.home, a), f.home, f.home))
 		return
 	}
 	// The incident writer compares and root-causes the RECORDS (log records or spans) an alert
@@ -789,7 +793,7 @@ func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[strin
 	// threshold), so an aggregated firing is the ALERT state mirrored on the Alert, and HyperDX's
 	// notification through the webhook.
 	if a.Aggregated() {
-		f.log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", hyperdxName(f.home, a)))
+		log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", hyperdxName(f.home, a)))
 		return
 	}
 	alert := incident.Alert{Namespace: a.Namespace, HumanAnalysis: a.Labels[incident.LabelAnalysis] == incident.AnalysisHuman, Alert: compare.Alert{
