@@ -171,3 +171,63 @@ func TestTheGroupRulesAdmitGroupedMetricAlertsOnly(t *testing.T) {
 		})
 	}
 }
+
+// reservedGroupKeys are the identifiers in scope wherever HyperDX 2.35 renders a metric tile's
+// groupBy (cited next to the rule in crd.alert.yaml). The tile aliases each key as itself, so a
+// key among them would shadow a column of the query.
+var reservedGroupKeys = []string{
+	"AggregationTemporality", "Attributes", "AttributesHash", "BucketCounts", "Count",
+	"Exemplars.FilteredAttributes", "Exemplars.SpanId", "Exemplars.TimeUnix", "Exemplars.TraceId",
+	"Exemplars.Value", "ExplicitBounds", "Flags", "IsMonotonic", "LastValue", "Max",
+	"MetricDescription", "MetricName", "MetricUnit", "Min", "Rate", "ResourceAttributes",
+	"ResourceSchemaUrl", "ScopeAttributes", "ScopeDroppedAttrCount", "ScopeName", "ScopeSchemaUrl",
+	"ScopeVersion", "ServiceName", "StartTimeUnix", "Sum", "TimeUnix", "Value",
+	"__hdx_time_bucket", "__hdx_time_bucket2", "attr_hash", "bounds_hash", "bucket_value", "counts",
+	"group",
+}
+
+// TestAGroupKeyNamingAMetricQueryColumnIsRefused holds the reserved-key rule: each reserved name
+// is refused with a message naming it, an attribute key is admitted, and so is a name that only
+// resembles a reserved one (identifiers are case-sensitive).
+func TestAGroupKeyNamingAMetricQueryColumnIsRefused(t *testing.T) {
+	s := specSchema(t)
+	const metric = "interval: 5m\nthreshold: 1\nthresholdType: below\nmetricRef: {name: m}\naggregation: max\n"
+	for _, k := range reservedGroupKeys {
+		t.Run(k, func(t *testing.T) {
+			want := "groupBy key " + k + " is refused: it is a column name of the HyperDX metric query"
+			got := admit(t, s, metric+"groupBy: [k8s.pod.name, \""+k+"\"]\n")
+			found := false
+			for _, m := range got {
+				found = found || strings.Contains(m, want)
+			}
+			if !found || len(got) != 1 {
+				t.Fatalf("want one refusal containing %q, got %v", want, got)
+			}
+		})
+	}
+	for _, k := range []string{"k8s.pod.name", "values", "value", "VALUE", "service.name", "groups",
+		"Exemplars", "hdx_time_bucket", "AttributesHash2", "sum"} {
+		t.Run("admitted "+k, func(t *testing.T) {
+			if got := admit(t, s, metric+"groupBy: [\""+k+"\"]\n"); len(got) != 0 {
+				t.Fatalf("refused: %v", got)
+			}
+		})
+	}
+}
+
+// The rule refuses exactly reservedGroupKeys: no name dropped, none added unseen.
+func TestTheReservedGroupKeysAreTheRulesList(t *testing.T) {
+	items := specSchema(t).structural.Properties["groupBy"].Items
+	if items == nil || len(items.XValidations) != 1 {
+		t.Fatalf("want one rule on a groupBy key, got %v", items)
+	}
+	rule := items.XValidations[0].Rule
+	var quoted []string
+	for _, k := range reservedGroupKeys {
+		quoted = append(quoted, `"`+k+`"`)
+	}
+	want := "!(self in [" + strings.Join(quoted, ", ") + "])"
+	if got := strings.Join(strings.Fields(rule), " "); got != want {
+		t.Fatalf("rule\n got %s\nwant %s", got, want)
+	}
+}

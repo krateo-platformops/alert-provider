@@ -90,6 +90,14 @@ lets a healthy one mask an unhealthy one (`max` of a readiness gauge is 1 while 
   from 0.2.64, whose tiles carry the expressions unaliased: one dashboard update, same alert.
 - Admission refuses `groupBy` without `metricRef`, with `ratio`, and with more than 5 keys, a
   duplicate key, or a key that is not an attribute name.
+- Admission also refuses a key that is a column name of HyperDX's metric query. Examples are
+  `Attributes`, `ResourceAttributes`, `ServiceName`, `MetricName`, `TimeUnix`, `Value`,
+  `LastValue`, `AttributesHash`, `__hdx_time_bucket` and `group`. ClickHouse resolves an alias
+  before a column of the same name, so the tile's alias would replace that column. A key named
+  `Attributes` would even alias over the map its own expression reads.
+  - The list is case-sensitive, as ClickHouse identifiers are: `value` and `values` are admitted.
+  - It was derived from HyperDX 2.35's gauge, sum and histogram query paths, and each name is
+    cited next to the rule in `crd.alert.yaml`.
 - The notification names the group without help: HyperDX 2.35 opens a grouped tile alert's
   notification body with its own `Group: "<group>"` line (`{{#if group}}Group: "{{{group}}}"{{/if}}`),
   on a firing and a resolve alike, and the Alert's message follows it. The message is pushed
