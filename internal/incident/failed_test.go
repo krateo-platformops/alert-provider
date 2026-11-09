@@ -289,7 +289,7 @@ func TestARerunThatFailsIsClosed(t *testing.T) {
 func TestAnInterruptedReanalysisRerunsWithItsFeedback(t *testing.T) {
 	c := newCase(t)
 	c.w.spawn = func(f func()) { f() }
-	original := BuildPrompt("CD not ready", "ALERT", "Body LIKE '%x%'", "", "")
+	original := BuildPrompt("CD not ready", "ALERT", "Body LIKE '%x%'", "", "", "")
 	c.interrupted("a-1", "a", seed{state: "Analyzing"}, original)
 	c.kube.writeStatus(ns, "a-1", map[string]any{"reanalysis": map[string]any{"at": "t", "feedback": "wrong pod", "count": 1}})
 	c.w.RecoverInterrupted(context.Background())

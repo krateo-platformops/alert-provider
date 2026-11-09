@@ -79,6 +79,14 @@ spec:
                 # error by HyperDX's own comment, and several keys do not render. Refused until proven.
                 - rule: "!has(self.groupBy) || !has(self.aggregation) || self.aggregation != 'increase'"
                   message: "groupBy does not support aggregation increase yet: HyperDX 2.35 renders the group into tuple() and toString() (renderChartConfig.ts:1949-2007), where an alias is a syntax error and several keys do not render. On a counter, aggregation sum totals the same per-interval deltas and groups"
+                # HyperDX's notification text is the description, a blank line ("\n\n") and the
+                # runbook, and @hyperdx/api@2.35.0 refuses a message over 4096 characters
+                # (api/src/utils/zod.ts alertSchema: z.string().min(1).max(4096)). Without a
+                # description the default text is at most 336 characters, which runbook's maxLength
+                # already fits. CEL counts code points and zod UTF-16 units, so a character outside
+                # the BMP (an emoji) counts once here and twice in HyperDX.
+                - rule: "!has(self.runbook) || !has(self.description) || size(self.runbook) == 0 || size(self.description) + 2 + size(self.runbook) <= 4096"
+                  message: "description and runbook together exceed HyperDX's 4096 characters for a notification text (description, a blank line, runbook): shorten the runbook"
               properties:
                 displayName:
                   type: string
@@ -205,6 +213,21 @@ spec:
                     One plain sentence saying what the alert catches, shown in the portal. The
                     investigation reads it as the alert's intent, and HyperDX sends it as the
                     notification text.
+                runbook:
+                  type: string
+                  # 3072 leaves at least 1022 characters of HyperDX's 4096 for the description (a
+                  # sentence), and fits under the default text an Alert without a description gets
+                  # (at most 336 characters, alert.go fields and hyperdx.go alertBody). Longer
+                  # guidance is a manual: link it.
+                  maxLength: 3072
+                  description: >
+                    Operator guidance for when the alert fires (markdown): what to check, and what
+                    never to do. Not shown in the portal. HyperDX sends it after the description,
+                    a blank line between them, so with the description it must fit HyperDX's 4096
+                    characters for a notification text. HyperDX renders that text as a Handlebars
+                    template and reads a word starting with "@" as a notification channel, so
+                    write neither a double opening brace nor such a word. The investigation reads
+                    it as operator guidance before it proposes a fix.
                 groupBy:
                   type: array
                   minItems: 1

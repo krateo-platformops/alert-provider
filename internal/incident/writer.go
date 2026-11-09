@@ -831,7 +831,7 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	if name == "" {
 		name = alert.Name
 	}
-	prompt := BuildPrompt(name, "ALERT", alert.Where, alert.Description, alert.Source)
+	prompt := BuildPrompt(name, "ALERT", alert.Where, alert.Description, alert.Runbook, alert.Source)
 	grace := IntervalSeconds(alert.Interval)
 	rows := func() ([]compare.Row, error) {
 		found, err := records(ctx, alert.Where, grace)

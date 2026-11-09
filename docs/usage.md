@@ -23,6 +23,28 @@ pass (60 s) that finds a HyperDX alert ALERT is a firing of its CR. Each firing 
 logged and lost. Comparing a firing with the alert's open incidents is one call to the model of the kagent
 ModelConfig `config.compareModelConfig`.
 
+## Operator guidance
+
+`spec.description` is one plain sentence: the portal shows it, HyperDX sends it, and the RCA reads
+it as the alert's intent. Guidance for whoever answers the alert goes in the optional
+`spec.runbook` (markdown), for example the constraint a fix must respect:
+
+```yaml
+spec:
+  description: The ClickHouse data disk is almost full.
+  runbook: |
+    Free space by dropping expired telemetry partitions.
+    Never drop audit partitions: they are the audit trail.
+```
+
+- HyperDX sends the description, a blank line, then the runbook. Changing the runbook updates the
+  HyperDX alert once.
+- The RCA prompt quotes the runbook in a labelled operator-guidance section, which the agent reads
+  before it proposes a fix. It is not shown in the portal.
+- At most 3072 characters, and at most 4094 with the description (HyperDX's limit for the text is
+  4096). Do not write `{{` or a word starting with `@`: HyperDX reads them as template syntax and
+  notification channels.
+
 ## Alert on a value from log rows
 
 An Alert can aggregate a value read from each log row instead of counting the rows: set `value`

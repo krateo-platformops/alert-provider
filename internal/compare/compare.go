@@ -106,6 +106,10 @@ type Alert struct {
 	Threshold     string // its Python str(); "1" when unset
 	ThresholdType string
 	Description   string
+	// Runbook is the Alert's operator guidance, for the RCA prompt. Prompt leaves it out: whether
+	// an incident's root cause produces these records is decided by the records and the
+	// incidents, and guidance on how to respond says nothing about which incident caused them.
+	Runbook string
 	// Source is the Alert's spec.source: Traces, or empty (logs).
 	Source string
 }
