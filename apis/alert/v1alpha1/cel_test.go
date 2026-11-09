@@ -142,6 +142,10 @@ func TestTheGroupRulesAdmitGroupedMetricAlertsOnly(t *testing.T) {
 			"labels: {failed: \"true\"}\nratio: {labels: {}}\ngroupBy: [service.name]\n", "groupBy and ratio are mutually exclusive"},
 		{"a key that is not an attribute name", metric + "groupBy: [\"k8s.pod.name) OR (1\"]\n", "should match"},
 		{"a key with a quote", metric + "groupBy: [\"a'b\"]\n", "should match"},
+		// The tile aliases each key as a backtick-quoted identifier: the pattern keeps both the quote
+		// and its escape out of a key.
+		{"a key with a backtick", metric + "groupBy: [\"a`b\"]\n", "should match"},
+		{"a key with a backslash", metric + "groupBy: [\"a\\\\b\"]\n", "should match"},
 		{"an empty key", metric + "groupBy: [\"\"]\n", "at least 1 chars long"},
 		{"no key", metric + "groupBy: []\n", "should have at least 1 items"},
 		{"six keys", metric + "groupBy: [a, b, c, d, e, f]\n", "must have at most 5 items"},

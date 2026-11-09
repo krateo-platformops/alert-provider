@@ -191,25 +191,34 @@ func Exceeds(value float64, thresholdType string, threshold, thresholdMax any) (
 	return false, false
 }
 
-// GroupBy are the SQL expressions a tile groups by, one per key: the key's value on the point,
+// GroupBy are the keys a tile groups by, each aliased as itself: the key's value on the point,
 // else on its resource, as LabelsWhere matches a label. kubeletstats and k8scluster put every
 // identity on the resource and leave the point empty, so a point-only group would put every
 // series in one group named "".
 //
-// They hold no `[` and no `=`: HyperDX names a group's column after its expression and looks the
-// value up by that name, and ClickHouse names a column `m['k']` "arrayElement(m, 'k')" and `a = b`
-// "equals(a, b)", so a group written with either comes back null (see compare.RowGroup). Hence
-// arrayElement, notEmpty and if.
-func GroupBy(keys []string) []string {
+// The tile names each column after its key, "<expr> AS <key in backticks>", so HyperDX's
+// notification reads "k8s.pod.name:<pod>"; charts/series is sent the same expressions unaliased
+// (see hyperdx.Select).
+func GroupBy(keys []string) []hyperdx.GroupKey {
 	if len(keys) == 0 {
 		return nil
 	}
-	out := make([]string, len(keys))
+	out := make([]hyperdx.GroupKey, len(keys))
 	for i, k := range keys {
-		key := sqlString(k)
-		out[i] = fmt.Sprintf("if(notEmpty(arrayElement(Attributes, %s)), arrayElement(Attributes, %s), arrayElement(ResourceAttributes, %s))", key, key, key)
+		out[i] = hyperdx.GroupKey{Alias: k, Expr: groupExpr(k)}
 	}
 	return out
+}
+
+// groupExpr is the SQL expression of key's value: on the point, else on its resource.
+//
+// It holds no `[` and no `=`: charts/series names a group's column after its expression and looks
+// the value up by that name, and ClickHouse names a column `m['k']` "arrayElement(m, 'k')" and
+// `a = b` "equals(a, b)", so a group written with either comes back null (see compare.RowGroup).
+// Hence arrayElement, notEmpty and if.
+func groupExpr(key string) string {
+	k := sqlString(key)
+	return fmt.Sprintf("if(notEmpty(arrayElement(Attributes, %s)), arrayElement(Attributes, %s), arrayElement(ResourceAttributes, %s))", k, k, k)
 }
 
 // LabelsWhere is the SQL filter keeping the metric points that carry labels, on the point or on its

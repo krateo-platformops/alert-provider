@@ -22,10 +22,20 @@ const notReady = "sre-pod-not-ready"
 var (
 	readyMetric = v1alpha1.MetricSpec{MetricName: "k8s.container.ready", Type: v1alpha1.MetricTypeGauge}
 	podKeys     = []string{"k8s.namespace.name", "k8s.pod.name", "k8s.container.name"}
-	// podGroupBy is the tile's groupBy for podKeys.
-	podGroupBy = "if(notEmpty(arrayElement(Attributes, 'k8s.namespace.name')), arrayElement(Attributes, 'k8s.namespace.name'), arrayElement(ResourceAttributes, 'k8s.namespace.name')), " +
-		"if(notEmpty(arrayElement(Attributes, 'k8s.pod.name')), arrayElement(Attributes, 'k8s.pod.name'), arrayElement(ResourceAttributes, 'k8s.pod.name')), " +
-		"if(notEmpty(arrayElement(Attributes, 'k8s.container.name')), arrayElement(Attributes, 'k8s.container.name'), arrayElement(ResourceAttributes, 'k8s.container.name'))"
+	// podGroupExprs are the group expressions of podKeys, unaliased: what charts/series is sent,
+	// and what a 0.2.64 tile held.
+	podGroupExprs = []string{
+		"if(notEmpty(arrayElement(Attributes, 'k8s.namespace.name')), arrayElement(Attributes, 'k8s.namespace.name'), arrayElement(ResourceAttributes, 'k8s.namespace.name'))",
+		"if(notEmpty(arrayElement(Attributes, 'k8s.pod.name')), arrayElement(Attributes, 'k8s.pod.name'), arrayElement(ResourceAttributes, 'k8s.pod.name'))",
+		"if(notEmpty(arrayElement(Attributes, 'k8s.container.name')), arrayElement(Attributes, 'k8s.container.name'), arrayElement(ResourceAttributes, 'k8s.container.name'))",
+	}
+	// podGroupBy is the tile's groupBy for podKeys: each expression aliased as its key, so
+	// HyperDX's notification reads "k8s.pod.name:<pod>".
+	podGroupBy = "if(notEmpty(arrayElement(Attributes, 'k8s.namespace.name')), arrayElement(Attributes, 'k8s.namespace.name'), arrayElement(ResourceAttributes, 'k8s.namespace.name')) AS `k8s.namespace.name`, " +
+		"if(notEmpty(arrayElement(Attributes, 'k8s.pod.name')), arrayElement(Attributes, 'k8s.pod.name'), arrayElement(ResourceAttributes, 'k8s.pod.name')) AS `k8s.pod.name`, " +
+		"if(notEmpty(arrayElement(Attributes, 'k8s.container.name')), arrayElement(Attributes, 'k8s.container.name'), arrayElement(ResourceAttributes, 'k8s.container.name')) AS `k8s.container.name`"
+	// podGroupBy0264 is the tile's groupBy as 0.2.64 wrote it: the expressions unaliased.
+	podGroupBy0264 = strings.Join(podGroupExprs, ", ")
 	// t0 is a pass's time: 30s into the minute 15:40.
 	t0 = time.Date(2026, 11, 8, 15, 40, 30, 0, time.UTC)
 )
@@ -125,9 +135,44 @@ func TestAGroupedAlertTileGroupsEachKeyOnThePointOrItsResource(t *testing.T) {
 }
 
 func TestAKeyIsEscapedInItsGroupExpression(t *testing.T) {
-	eq(t, "quoted", GroupBy([]string{`a'b\`}), []string{`if(notEmpty(arrayElement(Attributes, 'a\'b\\')), ` +
-		`arrayElement(Attributes, 'a\'b\\'), arrayElement(ResourceAttributes, 'a\'b\\'))`})
-	eq(t, "none", GroupBy(nil), []string(nil))
+	eq(t, "quoted", GroupBy([]string{`a'b\`}), []hyperdx.GroupKey{{Alias: `a'b\`,
+		Expr: `if(notEmpty(arrayElement(Attributes, 'a\'b\\')), arrayElement(Attributes, 'a\'b\\'), arrayElement(ResourceAttributes, 'a\'b\\'))`}})
+	eq(t, "none", GroupBy(nil), []hyperdx.GroupKey(nil))
+}
+
+// Each key is aliased as itself, from the one expression charts/series is sent unaliased.
+func TestEachGroupKeyIsAliasedAsItself(t *testing.T) {
+	keys := GroupBy(podKeys)
+	for i, g := range keys {
+		eq(t, "alias", g.Alias, podKeys[i])
+		eq(t, "expr", g.Expr, podGroupExprs[i])
+	}
+}
+
+// A 0.2.64 tile grouped by the unaliased expressions is rewritten in place on upgrade: one PUT of
+// the dashboard, the same HyperDX alert and tile, and then no drift.
+func TestAnUnaliasedTileIsRewrittenInPlaceOnUpgrade(t *testing.T) {
+	h := readinessHarness(t, t0)
+	h.pass(2)
+	before := h.byName()[notReady]
+	st := h.status(notReady)
+	d := h.api.Get("dashboards", before["dashboardId"].(string))
+	d["tiles"].([]any)[0].(map[string]any)["config"].(map[string]any)["groupBy"] = podGroupBy0264
+	h.api.Put("dashboards", d)
+	eq(t, "0.2.64 tile", h.api.TileOf(before)["groupBy"], podGroupBy0264)
+
+	h.api.ClearWrites()
+	h.pass(1)
+	eq(t, "writes", nonWebhookWrites(h.api), []hyperdxtest.Write{hyperdxtest.W("PUT", "dashboards", st.HyperdxDashboardID)})
+	live := h.byName()[notReady]
+	eq(t, "aliased", h.api.TileOf(live)["groupBy"], podGroupBy)
+	eq(t, "same alert", live["id"], before["id"])
+	eq(t, "same tile", live["tileId"], before["tileId"])
+	eq(t, "same status alert", h.status(notReady).HyperdxAlertID, st.HyperdxAlertID)
+
+	h.api.ClearWrites()
+	h.pass(3)
+	eq(t, "converged", nonWebhookWrites(h.api), []hyperdxtest.Write{})
 }
 
 func TestAChangedGroupByRewritesTheTileInPlace(t *testing.T) {
@@ -137,7 +182,7 @@ func TestAChangedGroupByRewritesTheTileInPlace(t *testing.T) {
 	h.edit(notReady, func(a *v1alpha1.Alert) { a.Spec.GroupBy = []string{"k8s.pod.name"} })
 	h.pass(1)
 	live := h.byName()[notReady]
-	eq(t, "groupBy", h.api.TileOf(live)["groupBy"], strings.Join(GroupBy([]string{"k8s.pod.name"}), ", "))
+	eq(t, "groupBy", h.api.TileOf(live)["groupBy"], podGroupExprs[1]+" AS `k8s.pod.name`")
 	eq(t, "same alert", live["id"], before["id"])
 	eq(t, "same tile", live["tileId"], before["tileId"])
 
@@ -251,7 +296,13 @@ func TestTheGroupsQueryIsTheTileSelectOverTheLastCompletedWindows(t *testing.T) 
 	eq(t, "end", body["endTime"], float64(minute(0).UnixMilli()))
 	eq(t, "series", body["series"], []any{map[string]any{"sourceId": "src-m", "aggFn": "max", "where": "",
 		"whereLanguage": "sql", "metricName": "k8s.container.ready", "metricDataType": "gauge",
-		"groupBy": []any{GroupBy(podKeys)[0], GroupBy(podKeys)[1], GroupBy(podKeys)[2]}}})
+		"groupBy": []any{podGroupExprs[0], podGroupExprs[1], podGroupExprs[2]}}})
+	// charts/series looks each group up by its expression's text: an alias would answer it null.
+	for _, g := range body["series"].([]any)[0].(map[string]any)["groupBy"].([]any) {
+		if strings.Contains(g.(string), " AS ") || strings.ContainsAny(g.(string), "[=`") {
+			t.Errorf("a charts/series group is aliased or holds [ or =: %s", g)
+		}
+	}
 }
 
 func TestAGroupBreachingEveryWindowIsListed(t *testing.T) {
