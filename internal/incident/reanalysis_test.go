@@ -87,7 +87,7 @@ const incName = "cd-not-ready-20260925-100000"
 // unknown, and its original prompt.
 func (c *writerCase) analyzedIncident(state string) {
 	c.kube.put(ns, incName, alertName, seed{state: state, rootCause: "chart 1.1.9 is missing"})
-	c.kube.writeSpec(ns, incName, map[string]any{"prompt": BuildPrompt("CD not ready", "ALERT", "Body LIKE '%x%'", "", "")})
+	c.kube.writeSpec(ns, incName, map[string]any{"prompt": BuildPrompt("CD not ready", "ALERT", "Body LIKE '%x%'", "", "", "")})
 	c.kube.writeStatus(ns, incName, map[string]any{
 		"howToFix": how, "report": "## old report", "sources": []any{map[string]any{"type": "logs"}},
 		"lastChecks": map[string]any{"precondition": map[string]any{"exit": 2, "since": "2026-10-19T15:41:19Z",

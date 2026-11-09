@@ -48,6 +48,12 @@ spec:
   threshold: 3
   thresholdType: above
   description: A Krateo platform pod keeps crashing and restarting.
+  runbook: |
+    Read the crashing container's previous logs first:
+    `kubectl -n krateo-system logs <pod> -c <container> --previous`.
+
+    Do not delete the pod or scale its Deployment to zero to stop the restarts: the cause
+    stays, and the logs that show it go with the pod.
 ---
 apiVersion: observability.krateo.io/v1alpha1
 kind: Alert
