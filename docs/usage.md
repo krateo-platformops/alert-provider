@@ -101,6 +101,8 @@ spec:
 - `groupBy` evaluates one series per group, e.g. per container, so a healthy series cannot mask
   an unhealthy one, and `consecutiveWindows` waits that many intervals before firing; the series
   that are ALERT are listed in `status.groups` (see [the readiness example](../examples/alerts/README.md#alerting-per-container)).
+  It groups a gauge, or a sum with any aggregation but `increase`. Grouped `increase` and grouped
+  histograms are refused for now (see [Grouped alerts](overview.md#grouped-alerts)).
 
 ## Pause an alert
 

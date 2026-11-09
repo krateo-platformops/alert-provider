@@ -59,6 +59,9 @@ func TestGroupReadsTheFirstGroupLine(t *testing.T) {
 		{"Group: mine\n" + firingBody, readyGroup},
 		{"Group: mine\n" + resolvedBody, readyGroup},
 		{"A container is not ready.\nGroup: ns:a, pod:b", "ns:a, pod:b"}, // only an unquoted line: tolerated
+		// The tile's aliased groups: each <key>:<value>.
+		{`Group: "k8s.namespace.name:acmp-groupby-test, k8s.pod.name:p, k8s.container.name:unready"` + "\n0 falls below 1",
+			"k8s.namespace.name:acmp-groupby-test, k8s.pod.name:p, k8s.container.name:unready"},
 		{"no group here\nGrouping: x", ""},
 		{"", ""},
 	} {

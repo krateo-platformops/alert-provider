@@ -140,8 +140,19 @@ func TestTheGroupRulesAdmitGroupedMetricAlertsOnly(t *testing.T) {
 			"groupBy splits a metric's series; it requires metricRef"},
 		{"groupBy with ratio", "interval: 5m\nthreshold: 0.01\nthresholdType: above\nmetricRef: {name: m}\naggregation: sum\n" +
 			"labels: {failed: \"true\"}\nratio: {labels: {}}\ngroupBy: [service.name]\n", "groupBy and ratio are mutually exclusive"},
+		// A grouped increase is refused until HyperDX's rendering of it is proven live.
+		{"groupBy with increase", "interval: 5m\nthreshold: 1\nthresholdType: above\nmetricRef: {name: m}\naggregation: increase\n" +
+			"groupBy: [k8s.pod.name]\n", "groupBy does not support aggregation increase yet"},
+		{"increase without groupBy", "interval: 5m\nthreshold: 1\nthresholdType: above\nmetricRef: {name: m}\naggregation: increase\n", ""},
+		{"a grouped gauge max", metric + "groupBy: [k8s.namespace.name, k8s.pod.name]\n", ""},
+		{"a grouped sum", "interval: 5m\nthreshold: 1\nthresholdType: above\nmetricRef: {name: m}\naggregation: sum\n" +
+			"groupBy: [k8s.pod.name]\n", ""},
 		{"a key that is not an attribute name", metric + "groupBy: [\"k8s.pod.name) OR (1\"]\n", "should match"},
 		{"a key with a quote", metric + "groupBy: [\"a'b\"]\n", "should match"},
+		// The tile aliases each key as a backtick-quoted identifier: the pattern keeps both the quote
+		// and its escape out of a key.
+		{"a key with a backtick", metric + "groupBy: [\"a`b\"]\n", "should match"},
+		{"a key with a backslash", metric + "groupBy: [\"a\\\\b\"]\n", "should match"},
 		{"an empty key", metric + "groupBy: [\"\"]\n", "at least 1 chars long"},
 		{"no key", metric + "groupBy: []\n", "should have at least 1 items"},
 		{"six keys", metric + "groupBy: [a, b, c, d, e, f]\n", "must have at most 5 items"},
@@ -165,5 +176,65 @@ func TestTheGroupRulesAdmitGroupedMetricAlertsOnly(t *testing.T) {
 				t.Fatalf("want a refusal containing %q, got %v", c.refused, got)
 			}
 		})
+	}
+}
+
+// reservedGroupKeys are the identifiers in scope wherever HyperDX 2.35 renders a metric tile's
+// groupBy (cited next to the rule in crd.alert.yaml). The tile aliases each key as itself, so a
+// key among them would shadow a column of the query.
+var reservedGroupKeys = []string{
+	"AggregationTemporality", "Attributes", "AttributesHash", "BucketCounts", "Count",
+	"Exemplars.FilteredAttributes", "Exemplars.SpanId", "Exemplars.TimeUnix", "Exemplars.TraceId",
+	"Exemplars.Value", "ExplicitBounds", "Flags", "IsMonotonic", "LastValue", "Max",
+	"MetricDescription", "MetricName", "MetricUnit", "Min", "Rate", "ResourceAttributes",
+	"ResourceSchemaUrl", "ScopeAttributes", "ScopeDroppedAttrCount", "ScopeName", "ScopeSchemaUrl",
+	"ScopeVersion", "ServiceName", "StartTimeUnix", "Sum", "TimeUnix", "Value",
+	"__hdx_time_bucket", "__hdx_time_bucket2", "attr_hash", "bounds_hash", "bucket_value", "counts",
+	"group",
+}
+
+// TestAGroupKeyNamingAMetricQueryColumnIsRefused holds the reserved-key rule: each reserved name
+// is refused with a message naming it, an attribute key is admitted, and so is a name that only
+// resembles a reserved one (identifiers are case-sensitive).
+func TestAGroupKeyNamingAMetricQueryColumnIsRefused(t *testing.T) {
+	s := specSchema(t)
+	const metric = "interval: 5m\nthreshold: 1\nthresholdType: below\nmetricRef: {name: m}\naggregation: max\n"
+	for _, k := range reservedGroupKeys {
+		t.Run(k, func(t *testing.T) {
+			want := "groupBy key " + k + " is refused: it is a column name of the HyperDX metric query"
+			got := admit(t, s, metric+"groupBy: [k8s.pod.name, \""+k+"\"]\n")
+			found := false
+			for _, m := range got {
+				found = found || strings.Contains(m, want)
+			}
+			if !found || len(got) != 1 {
+				t.Fatalf("want one refusal containing %q, got %v", want, got)
+			}
+		})
+	}
+	for _, k := range []string{"k8s.pod.name", "values", "value", "VALUE", "service.name", "groups",
+		"Exemplars", "hdx_time_bucket", "AttributesHash2", "sum"} {
+		t.Run("admitted "+k, func(t *testing.T) {
+			if got := admit(t, s, metric+"groupBy: [\""+k+"\"]\n"); len(got) != 0 {
+				t.Fatalf("refused: %v", got)
+			}
+		})
+	}
+}
+
+// The rule refuses exactly reservedGroupKeys: no name dropped, none added unseen.
+func TestTheReservedGroupKeysAreTheRulesList(t *testing.T) {
+	items := specSchema(t).structural.Properties["groupBy"].Items
+	if items == nil || len(items.XValidations) != 1 {
+		t.Fatalf("want one rule on a groupBy key, got %v", items)
+	}
+	rule := items.XValidations[0].Rule
+	var quoted []string
+	for _, k := range reservedGroupKeys {
+		quoted = append(quoted, `"`+k+`"`)
+	}
+	want := "!(self in [" + strings.Join(quoted, ", ") + "])"
+	if got := strings.Join(strings.Fields(rule), " "); got != want {
+		t.Fatalf("rule\n got %s\nwant %s", got, want)
 	}
 }

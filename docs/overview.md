@@ -70,14 +70,48 @@ keys' values, and HyperDX alerts on each on its own. Without it, an aggregation 
 lets a healthy one mask an unhealthy one (`max` of a readiness gauge is 1 while one container is 0).
 
 - Each key is read off the point, or off its resource when the point lacks it, as `labels` match:
-  the tile's `config.groupBy` holds, per key, `if(notEmpty(arrayElement(Attributes, 'k')),
-  arrayElement(Attributes, 'k'), arrayElement(ResourceAttributes, 'k'))`, comma-separated. No `[`
-  and no `=`: HyperDX looks a group's value up by its column name, and ClickHouse names those
+  per key, the expression is `if(notEmpty(arrayElement(Attributes, 'k')),
+  arrayElement(Attributes, 'k'), arrayElement(ResourceAttributes, 'k'))`. No `[` and no `=`:
+  `/api/v2/charts/series` looks a group's value up by its column name, and ClickHouse names those
   columns `arrayElement(...)` and `equals(...)`, so either would come back null.
+- The tile's `config.groupBy` carries each expression aliased as its key, `` <expr> AS `k` ``,
+  comma-separated: backtick-quoted, so a key's dots are part of the name, and admission admits no
+  backtick or backslash in a key. HyperDX's alert evaluation names a firing group after
+  the result's column names, `<column>:<value>, …`, and renders the tile's groupBy raw into
+  `SELECT` and `GROUP BY`, so the notification reads `k8s.namespace.name:<ns>,
+  k8s.pod.name:<pod>, k8s.container.name:<c>` rather than repeating each expression.
+- The `status.groups` query to `/api/v2/charts/series` sends the same expressions **unaliased**:
+  charts/series takes `expr AS alias` (the SQL runs) but then looks each group's value up by the
+  expression's text, so aliased it answers every group null. Probed on HyperDX 2.35, the aliased
+  query collapsed 641 rows into 3. Both come from one per-key expression; only the tile adds the
+  alias.
 - The tile stays a line chart: the v2 API takes no groupBy on a number tile. Adding, changing or
-  removing `groupBy` rewrites the tile in place and keeps the HyperDX alert.
+  removing `groupBy` rewrites the tile in place and keeps the HyperDX alert. So does the upgrade
+  from 0.2.64, whose tiles carry the expressions unaliased: one dashboard update, same alert.
+- **What can be grouped.** HyperDX 2.35 renders a tile's groupBy as a plain select list only for a
+  gauge (any aggregation) and for a sum with `avg`, `max`, `min`, `sum` or `p95`. Two other paths
+  are refused until each is proven live (references are to `@hyperdx/api@2.35.0`,
+  `packages/common-utils/src/core/`):
+  - `aggregation: increase` with `groupBy` is refused at admission, and again by the reconciler.
+    HyperDX pastes a grouped increase's groupBy, as one string, into its TopGroups ranking's
+    `tuple(...)` and a `toString(...)` null filter (`renderChartConfig.ts:1949-2007`). HyperDX's
+    own comment there calls an alias a syntax error, and several keys do not render. On a counter,
+    `aggregation: sum` totals the same per-interval deltas (`sum(Rate)`,
+    `renderChartConfig.ts:2017-2030`) without that ranking, and it groups.
+  - `groupBy` on a histogram Metric is refused by the reconciler, with `phase: Invalid` and nothing
+    pushed. Admission cannot see it, because the type is the Metric's. HyperDX packs a histogram's
+    groups into one array column, `[groupBy] AS group` (`histogram.ts:191`), so the notification
+    would name a single `group` column, and the alias would sit inside an array literal.
 - Admission refuses `groupBy` without `metricRef`, with `ratio`, and with more than 5 keys, a
   duplicate key, or a key that is not an attribute name.
+- Admission also refuses a key that is a column name of HyperDX's metric query. Examples are
+  `Attributes`, `ResourceAttributes`, `ServiceName`, `MetricName`, `TimeUnix`, `Value`,
+  `LastValue`, `AttributesHash`, `__hdx_time_bucket` and `group`. ClickHouse resolves an alias
+  before a column of the same name, so the tile's alias would replace that column. A key named
+  `Attributes` would even alias over the map its own expression reads.
+  - The list is case-sensitive, as ClickHouse identifiers are: `value` and `values` are admitted.
+  - It was derived from HyperDX 2.35's gauge, sum and histogram query paths, and each name is
+    cited next to the rule in `crd.alert.yaml`.
 - The notification names the group without help: HyperDX 2.35 opens a grouped tile alert's
   notification body with its own `Group: "<group>"` line (`{{#if group}}Group: "{{{group}}}"{{/if}}`),
   on a firing and a resolve alike, and the Alert's message follows it. The message is pushed
@@ -128,7 +162,8 @@ One `Alert` CR is one HyperDX alert and its own incidents, keyed on the CR's nam
   title into the JSON string. The reconciler updates an existing webhook whose body differs in
   place (PUT, same id), so an install converges without recreating any alert.
 - The provider only logs a notification, one line, e.g. `[webhook] '🚨 sre-pod-not-ready' ALERT
-  group="<column>:<value>, …" eventId=<hash>: the reconciler evaluates it on its next pass`. Of
+  group="k8s.namespace.name:<ns>, k8s.pod.name:<pod>, k8s.container.name:<c>" eventId=<hash>: the
+  reconciler evaluates it on its next pass` (each `<key>:<value>`, the key being the tile's alias). Of
   the body it logs only the group line of a grouped alert (`group=…`: HyperDX's quoted
   `Group: "…"` line, else the first unquoted `Group:` line), never the rest, which can quote the
   records an alert counted; an ungrouped alert's line has no `group=`.

@@ -107,6 +107,9 @@ func MetricSelect(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) (hyperdx.Selec
 	default:
 		return hyperdx.Select{}, fmt.Sprintf("aggregation %q is not one of avg, max, min, sum, p95, increase.", spec.Aggregation)
 	}
+	if why := groupedRefusal(spec, m); why != "" {
+		return hyperdx.Select{}, why
+	}
 	if spec.Ratio == nil {
 		return sel, ""
 	}
@@ -191,25 +194,63 @@ func Exceeds(value float64, thresholdType string, threshold, thresholdMax any) (
 	return false, false
 }
 
-// GroupBy are the SQL expressions a tile groups by, one per key: the key's value on the point,
+// groupedRefusal is why a grouped metric Alert cannot be evaluated, or "" if it can. HyperDX 2.35
+// renders a tile's groupBy as a plain select list only for a gauge and for a sum without
+// increase; the other two paths are refused until each is proven live:
+//
+//   - increase (a sum): the group is pasted, as one string, into the TopGroups ranking's
+//     tuple(...) and a toString(...) null filter (common-utils/src/core/renderChartConfig.ts
+//     :1949-2007), where HyperDX's own comment calls an alias a syntax error and several keys
+//     do not render. The CRD refuses the pair too.
+//   - a histogram (p95): the group is packed into one array literal, [groupBy] AS group
+//     (common-utils/src/core/histogram.ts:191), so the notification names a single "group"
+//     column. The metric type is the Metric's, which admission cannot see.
+func groupedRefusal(spec v1alpha1.AlertSpec, m v1alpha1.MetricSpec) string {
+	if len(spec.GroupBy) == 0 {
+		return ""
+	}
+	if spec.Aggregation == v1alpha1.AggregationIncrease {
+		return "groupBy does not support aggregation 'increase' yet: HyperDX 2.35 renders the group into " +
+			"tuple() and toString() (renderChartConfig.ts:1949-2007), where an alias is a syntax error and " +
+			"several keys do not render. On a counter, aggregation 'sum' totals the same per-interval " +
+			"deltas (renderChartConfig.ts:2017-2030) and groups."
+	}
+	if m.Type == v1alpha1.MetricTypeHistogram {
+		return fmt.Sprintf("groupBy on a histogram metric is not supported yet: %s is a histogram, and HyperDX 2.35 "+
+			"packs a histogram's groups into one array column (histogram.ts:191). Group a gauge or a sum, "+
+			"or drop groupBy.", m.MetricName)
+	}
+	return ""
+}
+
+// GroupBy are the keys a tile groups by, each aliased as itself: the key's value on the point,
 // else on its resource, as LabelsWhere matches a label. kubeletstats and k8scluster put every
 // identity on the resource and leave the point empty, so a point-only group would put every
 // series in one group named "".
 //
-// They hold no `[` and no `=`: HyperDX names a group's column after its expression and looks the
-// value up by that name, and ClickHouse names a column `m['k']` "arrayElement(m, 'k')" and `a = b`
-// "equals(a, b)", so a group written with either comes back null (see compare.RowGroup). Hence
-// arrayElement, notEmpty and if.
-func GroupBy(keys []string) []string {
+// The tile names each column after its key, "<expr> AS <key in backticks>", so HyperDX's
+// notification reads "k8s.pod.name:<pod>"; charts/series is sent the same expressions unaliased
+// (see hyperdx.Select).
+func GroupBy(keys []string) []hyperdx.GroupKey {
 	if len(keys) == 0 {
 		return nil
 	}
-	out := make([]string, len(keys))
+	out := make([]hyperdx.GroupKey, len(keys))
 	for i, k := range keys {
-		key := sqlString(k)
-		out[i] = fmt.Sprintf("if(notEmpty(arrayElement(Attributes, %s)), arrayElement(Attributes, %s), arrayElement(ResourceAttributes, %s))", key, key, key)
+		out[i] = hyperdx.GroupKey{Alias: k, Expr: groupExpr(k)}
 	}
 	return out
+}
+
+// groupExpr is the SQL expression of key's value: on the point, else on its resource.
+//
+// It holds no `[` and no `=`: charts/series names a group's column after its expression and looks
+// the value up by that name, and ClickHouse names a column `m['k']` "arrayElement(m, 'k')" and
+// `a = b` "equals(a, b)", so a group written with either comes back null (see compare.RowGroup).
+// Hence arrayElement, notEmpty and if.
+func groupExpr(key string) string {
+	k := sqlString(key)
+	return fmt.Sprintf("if(notEmpty(arrayElement(Attributes, %s)), arrayElement(Attributes, %s), arrayElement(ResourceAttributes, %s))", k, k, k)
 }
 
 // LabelsWhere is the SQL filter keeping the metric points that carry labels, on the point or on its

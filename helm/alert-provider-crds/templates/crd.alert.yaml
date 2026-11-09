@@ -73,6 +73,12 @@ spec:
                   message: "groupBy splits a metric's series; it requires metricRef"
                 - rule: "!has(self.groupBy) || !has(self.ratio)"
                   message: "groupBy and ratio are mutually exclusive: a grouped ratio would need both its totals grouped alike"
+                # HyperDX 2.35 pastes a grouped increase's groupBy, as one string, into the TopGroups
+                # ranking's tuple() and a toString() null filter
+                # (common-utils/src/core/renderChartConfig.ts:1949-2007): an alias there is a syntax
+                # error by HyperDX's own comment, and several keys do not render. Refused until proven.
+                - rule: "!has(self.groupBy) || !has(self.aggregation) || self.aggregation != 'increase'"
+                  message: "groupBy does not support aggregation increase yet: HyperDX 2.35 renders the group into tuple() and toString() (renderChartConfig.ts:1949-2007), where an alias is a syntax error and several keys do not render. On a counter, aggregation sum totals the same per-interval deltas and groups"
               properties:
                 displayName:
                   type: string
@@ -209,6 +215,45 @@ spec:
                     minLength: 1
                     maxLength: 256
                     pattern: '^[A-Za-z0-9_./-]+$'
+                    # The tile aliases each key as itself (`<expr> AS `<key>``), and ClickHouse
+                    # resolves an alias before a column of the same name (case-sensitively), so a
+                    # key named after an identifier in scope where HyperDX 2.35 renders the tile's
+                    # groupBy would replace that column, or clash with an alias of the same name.
+                    # The names, from @hyperdx/api@2.35.0:
+                    #   gauge, outer query FROM Bucketed (common-utils/src/core/renderChartConfig.ts):
+                    #     __hdx_time_bucket2 (:1703, the bucket alias), AttributesHash (:1746,
+                    #     :1756), LastValue (:1757), ScopeAttributes (:1758), ResourceAttributes
+                    #     (:1759), Attributes (:1760), ResourceSchemaUrl (:1761), ScopeName
+                    #     (:1762), ScopeVersion (:1763), ScopeDroppedAttrCount (:1764),
+                    #     ScopeSchemaUrl (:1765), ServiceName (:1766), MetricDescription (:1767),
+                    #     MetricUnit (:1768), StartTimeUnix (:1769), Flags (:1770); and the outer
+                    #     time bucket __hdx_time_bucket (:80, the default alias at :831).
+                    #   sum, outer query FROM Bucketed (renderChartConfig.ts:1882-1902):
+                    #     the same, plus Rate (:1885), Sum (:1886), MetricName (:1895),
+                    #     AggregationTemporality (:1901), IsMonotonic (:1902); the outer value
+                    #     alias Value (:2019, :2027, :2033); with increase, the TopGroups CTE's
+                    #     group (:1986) and bucket_value (:1987).
+                    #   histogram (p95), innermost select over otel_metrics_histogram
+                    #     (common-utils/src/core/histogram.ts:185-197): every column of the
+                    #     table (docker/otel-collector/schema/seed/00003_otel_metrics.sql:83-109,
+                    #     which adds TimeUnix, Count, BucketCounts, ExplicitBounds, Min, Max and
+                    #     the Exemplars.* columns), and that select's group (:191), attr_hash
+                    #     (:192), bounds_hash (:193), counts (:194).
+                    # A metric Alert never sends count on a histogram, and the API offers no
+                    # exponential histogram or summary, so those paths add nothing.
+                    x-kubernetes-validations:
+                      - rule: '!(self in ["AggregationTemporality", "Attributes", "AttributesHash", "BucketCounts", "Count",
+                          "Exemplars.FilteredAttributes", "Exemplars.SpanId", "Exemplars.TimeUnix",
+                          "Exemplars.TraceId", "Exemplars.Value", "ExplicitBounds", "Flags", "IsMonotonic",
+                          "LastValue", "Max", "MetricDescription", "MetricName", "MetricUnit", "Min", "Rate",
+                          "ResourceAttributes", "ResourceSchemaUrl", "ScopeAttributes", "ScopeDroppedAttrCount",
+                          "ScopeName", "ScopeSchemaUrl", "ScopeVersion", "ServiceName", "StartTimeUnix", "Sum",
+                          "TimeUnix", "Value", "__hdx_time_bucket", "__hdx_time_bucket2", "attr_hash",
+                          "bounds_hash", "bucket_value", "counts", "group"])'
+                        messageExpression: >-
+                          'groupBy key ' + self + ' is refused: it is a column name of the HyperDX
+                          metric query, and the tile aliases each key as itself, so this key
+                          would shadow that column.'
                   description: >
                     Evaluate one series per distinct value of these attribute keys, e.g.
                     [k8s.namespace.name, k8s.pod.name, k8s.container.name]: one unhealthy container
@@ -217,7 +262,10 @@ spec:
                     evaluates each series on its own, counts consecutiveWindows per series, and
                     resolves a series on one interval within the threshold; a series that stops
                     reporting is never resolved by HyperDX, so status.groups (computed by the
-                    provider) is the per-series truth. Metric alerts only; refused with ratio.
+                    provider) is the per-series truth. Metric alerts only; refused with ratio and
+                    with aggregation increase, and a histogram Metric's Alert is Invalid with it. A
+                    key that is a column name of HyperDX's metric query (Attributes, Value,
+                    ServiceName, ...) is refused: the tile aliases each key as itself.
                 consecutiveWindows:
                   type: integer
                   minimum: 1

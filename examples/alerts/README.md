@@ -120,8 +120,10 @@ How HyperDX evaluates it:
   [Grouped alerts](../../docs/overview.md#grouped-alerts).
 - The keys are read off the point or, as here, its resource; a key matches either.
 - HyperDX's notification opens with `Group: "…"`, the firing series' keys and values, before the
-  message, which is pushed as written. The provider's webhook log carries that line:
-  `[webhook] '🚨 sre-pod-not-ready' ALERT group="…" eventId=…`.
+  message, which is pushed as written. The tile aliases each key's expression as the key, so the
+  line reads `Group: "k8s.namespace.name:<ns>, k8s.pod.name:<pod>, k8s.container.name:<c>"`.
+  The provider's webhook log carries it:
+  `[webhook] '🚨 sre-pod-not-ready' ALERT group="k8s.namespace.name:<ns>, k8s.pod.name:<pod>, k8s.container.name:<c>" eventId=…`.
 
 HyperDX never resolves a series that stops reporting (a deleted pod), and its API shows only the
 roll-up state, so the provider lists the series that are ALERT in `status.groups`:

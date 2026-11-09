@@ -182,14 +182,45 @@ type Select struct {
 	// Ratio, when set, is the denominator: the tile carries both select items with asRatio, and
 	// HyperDX evaluates this select divided by Ratio (renderChartConfig: divide(a, b)).
 	Ratio *Select
-	// GroupBy are SQL expressions, one per group key: the tile evaluates one series per distinct
-	// tuple of their values, and HyperDX alerts on each series on its own. Empty for one series.
-	GroupBy []string
+	// GroupBy are the group keys, in order: the tile evaluates one series per distinct tuple of
+	// their values, and HyperDX alerts on each series on its own. Empty for one series.
+	GroupBy []GroupKey
 }
 
-// groupBy is the tile's config.groupBy: GroupBy as one comma-separated SQL list.
+// GroupKey is one key a select groups by: Expr is the SQL expression of its value, Alias the
+// column name the tile gives it.
+type GroupKey struct {
+	Alias, Expr string
+}
+
+// groupBy is the tile's config.groupBy: each key's expression AS its alias, as one comma-separated
+// SQL list. HyperDX's alert evaluation (checkAlerts) names a firing group after the result's
+// column names, "<column>:<value>, ...", so unaliased a notification would repeat each whole
+// expression. The tile renders this string raw into SELECT and GROUP BY, which ClickHouse takes.
 func (s Select) groupBy() string {
-	return strings.Join(s.GroupBy, ", ")
+	items := make([]string, len(s.GroupBy))
+	for i, g := range s.GroupBy {
+		items[i] = g.Expr + " AS " + identifier(g.Alias)
+	}
+	return strings.Join(items, ", ")
+}
+
+// groupExprs are the charts/series groupBy: the keys' expressions, unaliased. charts/series takes
+// an alias but looks each group's value up by the expression's text, so aliased it answers every
+// group null and the series collapse into one.
+func (s Select) groupExprs() []string {
+	exprs := make([]string, len(s.GroupBy))
+	for i, g := range s.GroupBy {
+		exprs[i] = g.Expr
+	}
+	return exprs
+}
+
+// identifier is name as a ClickHouse quoted identifier: backtick-quoted, so a key's dots are part
+// of the name, with backslash and backtick escaped, so a name can never close the quote. The CRD
+// admits neither in a group key.
+func identifier(name string) string {
+	return "`" + strings.NewReplacer(`\`, `\\`, "`", "\\`").Replace(name) + "`"
 }
 
 // CountSelect counts the rows matching where.
@@ -327,7 +358,7 @@ type Bucket struct {
 // never adds an interval that has only begun.
 func (c *Client) GroupBuckets(ctx context.Context, source map[string]any, sel Select, granularity string, start, end time.Time) ([]Bucket, error) {
 	series := map[string]any{"sourceId": ID(source), "aggFn": sel.AggFn, "where": sel.Where,
-		"whereLanguage": "sql", "groupBy": sel.GroupBy}
+		"whereLanguage": "sql", "groupBy": sel.groupExprs()}
 	if sel.AggFn == "quantile" {
 		series["level"] = sel.Level
 	}
