@@ -176,6 +176,41 @@
           }
         }
       }
+    },
+    "otel": {
+      "type": "object",
+      "title": "OpenTelemetry tracing",
+      "description": "Exports the provider's spans over OTLP/HTTP to the node-local collector agent at http://$(HOST_IP):4318. Off by default: nothing renders and no tracer is registered. Only the Deployment gets the variables; the bootstrap Job's pod template is immutable within a release.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Tracing enabled",
+          "description": "Sets OTEL_ENABLED, OTEL_TRACING_ENABLED, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_TRACES_SAMPLER, OTEL_SERVICE_NAME and SERVICE_VERSION on the Deployment.",
+          "default": false
+        },
+        "tracesSampler": {
+          "type": "string",
+          "title": "Traces sampler",
+          "description": "OTEL_TRACES_SAMPLER, read by the OpenTelemetry SDK. parentbased_always_on keeps every root span and follows an inbound parent's decision otherwise.",
+          "enum": [
+            "always_on",
+            "always_off",
+            "traceidratio",
+            "parentbased_always_on",
+            "parentbased_always_off",
+            "parentbased_traceidratio"
+          ],
+          "default": "parentbased_always_on"
+        },
+        "serviceName": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Service name",
+          "description": "OTEL_SERVICE_NAME: service.name on every span.",
+          "default": "krateo-alert-provider"
+        }
+      }
     }
   }
 }

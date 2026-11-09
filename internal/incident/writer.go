@@ -17,12 +17,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 const (
@@ -340,8 +343,26 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 // one while it still holds, else one LLM call. It holds while the candidates are the same and every
 // current record was among the ones it saw; a record that left the window since does not void it.
 // Only an answered call is remembered, so a failed one is retried on the next firing.
+//
+// Its span is incident.compare: the records read (a HyperDX client span) and, unless the last
+// verdict holds, the model call (a client span). Neither the prompt nor the reason is recorded.
 func (w *Writer) verdict(ctx context.Context, key string, alert Alert, candidates []map[string]any, names []string,
-	rows func() ([]compare.Row, error)) (string, string, error) {
+	rows func() ([]compare.Row, error)) (match, reason string, err error) {
+	ctx, span := tracing.Start(ctx, "incident.compare", trace.WithAttributes(
+		append(alertAttrs(alert.Namespace, alert.Name), attrCandidates.Int(len(candidates)))...))
+	defer func() {
+		if err != nil {
+			span.SetStatus(codes.Error, err.Error())
+		} else if match != "" { // none: no attribute
+			span.SetAttributes(attrMatch.String(match))
+		}
+		span.End()
+	}()
+	return w.verdictIn(ctx, key, alert, candidates, names, rows, span)
+}
+
+func (w *Writer) verdictIn(ctx context.Context, key string, alert Alert, candidates []map[string]any, names []string,
+	rows func() ([]compare.Row, error), span trace.Span) (string, string, error) {
 	r, err := rows()
 	if err != nil {
 		return "", "", err
@@ -350,7 +371,9 @@ func (w *Writer) verdict(ctx context.Context, key string, alert Alert, candidate
 	w.mu.Lock()
 	last, ok := w.verdicts[key]
 	w.mu.Unlock()
-	if ok && last.incidents == incidents && seen(last.records, r) {
+	cached := ok && last.incidents == incidents && seen(last.records, r)
+	span.SetAttributes(attrCached.Bool(cached))
+	if cached {
 		return last.match, "no new record since the last verdict: " + last.reason, nil
 	}
 	match, reason, err := w.compare(ctx, compare.Prompt(alert.Alert, candidates, r), names)
@@ -504,7 +527,12 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 // An alert outside the home namespace is refused before anything is read, compared or written:
 // the RCA agent reads the whole platform, so its analysis of a tenant's alert could quote other
 // tenants' data. The Alert controller never hands one over; this is the writer's own guard.
+//
+// Its span is incident.fire. The Alert controller passes a context detached from its reconcile
+// (tracing.Detach), so the span is a new trace linked to the reconcile's alert.observe.
 func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
+	ctx, span := tracing.Start(ctx, "incident.fire", trace.WithAttributes(alertAttrs(alert.Namespace, alert.Name)...))
+	defer span.End()
 	if pyfmt.Len(alert.Name) > 63 {
 		w.log.Info(fmt.Sprintf("[incident] alert %s: a name over 63 characters cannot label an Incident; skipping", pyfmt.Repr(alert.Name)))
 		return
@@ -555,10 +583,13 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 		return
 	case err != nil: // a failed write loses this firing, not the next one
 		w.log.Info(fmt.Sprintf("[err] alert %s: firing not recorded (%s)", key, err))
+		span.SetStatus(codes.Error, err.Error())
 		return
 	}
+	span.SetAttributes(attrOpened.Bool(created != nil))
 	if created != nil && !alert.HumanAnalysis {
 		name := str(metadata(created), "name")
+		span.SetAttributes(attrIncident.String(name))
 		w.RunAnalysis(ctx, ns, name, prompt, name)
 	}
 }
@@ -568,14 +599,21 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 // A transient failure is retried AnalysisRetries times, each in a thread of its own. error says why
 // an incident has no howToFix: the call failed, the answer was empty or unstructured, or its
 // scripts were unusable. It is cleared when howToFix is written.
+//
+// Its span is incident.analyze, with a client span per A2A call; neither carries the prompt or
+// the answer.
 func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) {
+	ctx, span := tracing.Start(ctx, "incident.analyze", trace.WithAttributes(
+		attrIncidentNamespace.String(ns), attrIncident.String(name)))
+	defer span.End()
 	var st map[string]any
+	var why string // the last attempt's transient failure, "" when it did not fail
 	for attempt := 0; ; attempt++ {
+		span.SetAttributes(attrAttempts.Int(attempt + 1))
 		id := key
 		if attempt > 0 {
 			id = fmt.Sprintf("%s#retry-%d", key, attempt)
 		}
-		var why string
 		st, why = w.analysis(ctx, ns, name, prompt, contextID(id))
 		if why == "" || attempt >= w.cfg.AnalysisRetries {
 			break
@@ -586,9 +624,13 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) 
 			break
 		}
 	}
+	if why != "" {
+		span.SetStatus(codes.Error, why) // e.g. "the call failed"; the A2A client span has the error
+	}
 	st["completedAt"] = pyfmt.Isoformat(w.now())
 	if err := w.finish(ctx, ns, name, st); err != nil { // RecoverInterrupted opens it after a restart
 		w.log.Info(fmt.Sprintf("[err] incident %s/%s: analysis not written (%s)", ns, name, err))
+		span.SetStatus(codes.Error, err.Error())
 		return
 	}
 	fix := "no"

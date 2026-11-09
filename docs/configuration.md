@@ -20,6 +20,9 @@ timestamp: 2026-08-20T00:00:00Z
 | `config.analysisRetryDelay` | `120` | seconds before the first RCA retry; each next one waits twice as long |
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |
 | `config.reconcileInterval` | `60` | seconds between reconciler passes; each pass that finds an alert ALERT is one firing |
+| `otel.enabled` | `false` | export OpenTelemetry traces (see Tracing) |
+| `otel.tracesSampler` | `parentbased_always_on` | `OTEL_TRACES_SAMPLER` |
+| `otel.serviceName` | `krateo-alert-provider` | `OTEL_SERVICE_NAME`, the spans' `service.name` |
 
 The release namespace is the home namespace (`NAMESPACE`): its Alerts keep their bare names in
 HyperDX and alone open Incidents, which it holds with the `hyperdx-api-token` Secret and the
@@ -30,3 +33,46 @@ their status, Metrics and Events everywhere.
 
 Runtime env (set on the Deployment) carries these, plus `A2A_TIMEOUT` (900 s, the longest silence on the RCA stream) and
 `COMPARE_TIMEOUT` (60 s, one comparison). See `helm/alert-provider/templates/deployment.yaml`.
+
+## Tracing
+
+Off by default. With `otel.enabled: false` the chart renders no OTel variable and the binary
+registers no tracer: the pod is what it was before tracing. With `otel.enabled: true` the
+Deployment gets `OTEL_ENABLED`, `OTEL_TRACING_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://$(HOST_IP):4318`
+(the node-local collector agent; `HOST_IP` is the `status.hostIP` fieldRef, declared first so it
+expands), `OTEL_TRACES_SAMPLER`, `OTEL_SERVICE_NAME` and `SERVICE_VERSION` (the image tag, recorded
+as `service.version`). The `hyperdx-key-bootstrap` Job gets none of them: its pod template is
+immutable within a release, so the switch must not change it.
+
+The spans, by trace:
+
+| span | kind | parent | attributes |
+|---|---|---|---|
+| `alert.reconcile` | internal | root, one per Alert pass | `alert.namespace`, `alert.name` |
+| `alert.observe` | internal | `alert.reconcile` | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state` |
+| `alert.create` | internal | `alert.reconcile`, on the pass that creates the HyperDX dashboard and alert | as above |
+| `alert.update` | internal | `alert.reconcile`, on a pass that pushes the spec | as above |
+| `alert.delete` | internal | `alert.reconcile`, on the finalizing pass | as above |
+| `incident.fire` | internal | new root, **linked** to the `alert.observe` that fired it | `alert.namespace`, `alert.name`, `incident.opened`, `incident.name` |
+| `incident.compare` | internal | `incident.fire` | `incident.compare.candidates`, `incident.compare.cached`, `incident.compare.match` |
+| `incident.analyze` | internal | `incident.fire`, or a new root linked to `incident.reanalyze` | `incident.namespace`, `incident.name`, `incident.analysis.attempts` |
+| `incident.reanalyze` | internal | root, one per reanalysis request | `incident.namespace`, `incident.name`, `incident.reanalysis.count` |
+| `<METHOD> /webhook` | server | root, or the caller's `traceparent` | otelhttp's; no span for `GET /healthz` |
+| `HTTP GET`, `HTTP POST`, … | client | the action that made the call | otelhttp's; HyperDX, A2A, authn, the comparison model, the bootstrap session |
+
+A firing and a reanalysis outlive the reconcile that starts them (an RCA takes minutes), so they
+run under the process's context, not the reconcile's: the reconcile timeout never cuts them short
+and a shutdown still stops them. Their span is therefore a new trace linked to the reconcile's
+span, not a child of a span that ended minutes earlier, and each reconcile trace stays as long as
+the reconcile.
+
+No span records a header, a body, a prompt, a completion or a token. Every URL attribute is
+exported without its query string, fragment or userinfo, and a Server span without its raw path.
+`traceparent` and `baggage` go only to in-cluster hosts (a bare Service name, `*.svc`,
+`*.cluster.local`, a loopback or private IP): a comparison sent straight to Gemini or OpenAI still
+gets its client span, with no trace header. The Kubernetes client is not instrumented, so watches
+and cache reads make no spans.
+
+Log records carry no trace or span id yet: that correlation arrives with the provider-runtime
+release that gives the logger the request context. The logs are unchanged by tracing.
+

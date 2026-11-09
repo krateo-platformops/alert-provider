@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"strings"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 // analysisKeys are the status fields an analysis writes, and the check results that judge its
@@ -29,7 +33,18 @@ func spec(obj map[string]any) map[string]any {
 // and the RCA runs again under run, off the caller. Its prompt carries the previous analysis, its
 // check results and the request's feedback. In any other state the request is removed unanswered:
 // an Analyzing incident is already being analyzed, and a Resolved or Closed one is over.
-func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) error {
+//
+// Its span is incident.reanalyze; the RCA it starts is incident.analyze, a new trace linked to it
+// (tracing.Detach) that runs under run, so it outlives the reconcile and stops with run.
+func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error) {
+	ctx, span := tracing.Start(ctx, "incident.reanalyze", trace.WithAttributes(
+		attrIncidentNamespace.String(ns), attrIncident.String(name)))
+	defer func() {
+		if err != nil {
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	for range writeAttempts {
 		incident, err := w.kube.Get(ctx, ns, name)
 		if code(err) == 404 {
@@ -81,7 +96,9 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) error {
 		if err := w.dropRequest(ctx, ns, name); err != nil {
 			w.log.Info(fmt.Sprintf("[err] incident %s/%s: spec.reanalysis not removed (%s)", ns, name, err))
 		}
-		w.spawn(func() { w.RunAnalysis(run, ns, name, prompt, fmt.Sprintf("%s#reanalysis-%d", name, count)) })
+		span.SetAttributes(attrReanalysis.Int64(count))
+		runCtx := tracing.Detach(run, ctx)
+		w.spawn(func() { w.RunAnalysis(runCtx, ns, name, prompt, fmt.Sprintf("%s#reanalysis-%d", name, count)) })
 		return nil
 	}
 	return fmt.Errorf("incident %s/%s: no status write succeeded in %d attempts", ns, name, writeAttempts)

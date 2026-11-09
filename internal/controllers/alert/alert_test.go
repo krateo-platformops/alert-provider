@@ -90,6 +90,11 @@ func (h *harness) reconcile(name string) error { return h.reconcileIn(ns, name) 
 // reconcileIn is one reconcile of the Alert, in provider-runtime's order: connect, observe, then
 // delete or add the finalizer and update, and the status write that closes every reconcile.
 func (h *harness) reconcileIn(namespace, name string) error {
+	return h.reconcileCtx(ctx, namespace, name)
+}
+
+// reconcileCtx is reconcileIn under ctx, the context provider-runtime passes to every action.
+func (h *harness) reconcileCtx(ctx context.Context, namespace, name string) error {
 	a := &v1alpha1.Alert{}
 	if err := h.kube.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, a); err != nil {
 		return err

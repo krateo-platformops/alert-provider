@@ -219,6 +219,25 @@ spec:
             # here, so the platform-scoped defaults are portable across a non-default krateo namespace.
             - name: DEFAULT_ALERTS_JSON
               value: {{ .Values.config.defaultAlerts | toJson | replace "${NAMESPACE}" .Release.Namespace | quote }}
+            {{- if .Values.otel.enabled }}
+            # --- OpenTelemetry tracing (values.otel) ---
+            # HOST_IP first: Kubernetes expands $(HOST_IP) only from a variable declared before it.
+            - name: HOST_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            - name: OTEL_ENABLED
+              value: "true"
+            - name: OTEL_TRACING_ENABLED
+              value: "true"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://$(HOST_IP):4318"
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .Values.otel.tracesSampler | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.otel.serviceName | quote }}
+            # service.version: the release, as the image tag is.
+            - name: SERVICE_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | toString | quote }}
+            {{- end }}
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 3

@@ -16,6 +16,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/httpx"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 // A2A calls the RCA agent (incident-agent) with JSON-RPC message/stream.
@@ -29,7 +30,9 @@ type A2A struct {
 	JWT func(context.Context) string
 }
 
-var a2aHTTP = &http.Client{}
+// a2aHTTP is the A2A client: no overall timeout (Timeout bounds the idle stream instead), and a
+// client span per call when tracing is on. It is built per call, so it follows the tracing gate.
+func a2aHTTP() *http.Client { return &http.Client{Transport: tracing.WrapTransport(nil)} }
 
 // Analyze is the agent's answer and the tool results its tools actually returned. contextID names
 // the kagent thread, the incident's own. The ledger is the ground truth report.Parse bounds
@@ -67,7 +70,7 @@ func (a *A2A) Analyze(ctx context.Context, prompt, contextID string) (string, []
 	if jwt := a.JWT(ctx); jwt != "" {
 		req.Header.Set("Authorization", "Bearer "+jwt)
 	}
-	resp, err := a2aHTTP.Do(req)
+	resp, err := a2aHTTP().Do(req)
 	if err != nil {
 		return "", nil, timedOut(err)
 	}

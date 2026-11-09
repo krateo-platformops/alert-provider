@@ -41,6 +41,7 @@ import (
 
 	"github.com/krateo-platformops/alert-provider/internal/httpx"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 // Config is the HyperDX to log in to, its admin, and the Secret to write.
@@ -254,7 +255,9 @@ func Run(ctx context.Context, cfg Config, kube kubernetes.Interface) error {
 	if err != nil {
 		return err
 	}
-	s := &session{cfg: cfg, http: &http.Client{Jar: jar,
+	// With tracing on, every call is a client span; the admin password and the session cookie ride
+	// the body and the headers, which no span records.
+	s := &session{cfg: cfg, http: &http.Client{Jar: jar, Transport: tracing.WrapTransport(nil),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 
 	existing, err := s.waitForHyperDX(ctx)

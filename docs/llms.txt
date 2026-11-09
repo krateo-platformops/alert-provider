@@ -18,7 +18,7 @@ internal/compare: the comparison's system prompt, prompt, record grouping + verd
 
 docs/overview.md: architecture
 docs/usage.md: install + wire the webhook
-docs/configuration.md: image + runtime env
+docs/configuration.md: image + runtime env; OpenTelemetry tracing (otel.enabled, off by default; internal/tracing), its span list
 docs/api.md: the Alert CRD, the Incident fields written, HTTP surface
 internal/report: the RCA output contract; howToFix = {precondition, apply, verify, rollback} bash scripts, exit 0 gone / 1 holds / else unknown, the first three or none, rollback optional, plus an optional applyAction (one k8s write the portal sends as the user)
 docs/examples.md: runnable examples

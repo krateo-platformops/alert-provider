@@ -19,6 +19,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/httpx"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
 // GeminiOpenAIURL is Gemini's OpenAI-compatible endpoint, for a ModelConfig of provider Gemini.
@@ -36,6 +37,10 @@ type Comparer struct {
 	ModelConfig string
 	Timeout     time.Duration
 	JWT         func(context.Context) string
+	// Transport carries the chat-completions call; nil is http.DefaultTransport. With tracing on it
+	// is wrapped for a client span, which propagates the trace only to an in-cluster baseUrl: a
+	// Gemini or OpenAI host gets no traceparent (tracing.WrapTransport).
+	Transport http.RoundTripper
 }
 
 // endpoint is the chat-completions URL, model and key the ModelConfig names, as kagent resolves
@@ -109,7 +114,7 @@ func (c *Comparer) Compare(ctx context.Context, prompt string, names []string) (
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Transport: tracing.WrapTransport(c.Transport)}).Do(req)
 	if err != nil {
 		return "", "", failed(err)
 	}
