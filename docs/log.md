@@ -52,3 +52,7 @@ timestamp: 2026-08-20T00:00:00Z
 ## 2026-10-22
 - `A2A_TIMEOUT` defaults to 900 s. The RCA stream is silent while the agent waits on a model call, and the agentgateway LLM route now waits up to 600 s for one; at 180 s a slow provider failed the RCA and every retry.
 - The RCA prompt's check rules: full resource names in every script (`deployments.apps`, not `deployment`), `any`/`all` for yes/no jq tests, text into jq with `--arg`, and a precondition whose object is gone exits 0. Its examples follow them.
+
+## 2026-11-09
+- The Alerts' passes of one poll interval share one read of HyperDX's alerts list instead of one each, and any write the controller makes to the alerts or dashboards drops it. A mirrored `state` is at most one interval old.
+- A HyperDX `429` defers the pass instead of failing it: provider-runtime's rate-limit governor holds every Alert's calls until the `Retry-After` (a poll interval without one, 10 minutes at most), with `Synced=False/ReconcileDeferred`; `status.phase` is left as it was.

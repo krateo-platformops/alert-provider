@@ -72,9 +72,14 @@ func newHarness(t *testing.T, alerts ...*v1alpha1.Alert) *harness {
 	hdx := func() *hyperdx.Client { return hyperdx.New(api.URL, "k") }
 	log := logging.NewNopLogger()
 	h.conn = &connector{
-		home:    ns,
-		kube:    kube,
-		hdx:     hdx,
+		home:     ns,
+		kube:     kube,
+		hdx:      hdx,
+		key:      hdx().RateLimitKey(),
+		interval: time.Minute,
+		// No reuse: a test that changes HyperDX between passes sees it on the next one. The
+		// shared list's own tests give it a TTL (listcache_test.go).
+		alerts:  newAlertsList(0),
 		webhook: &webhook{kube: kube, name: "krateo-alert-provider", target: "http://x/webhook", log: log},
 		firings: &firings{home: ns, hdx: hdx, log: log, ctx: ctx, last: map[types.UID]time.Time{},
 			run:  func(f func()) { f() },
