@@ -34,6 +34,23 @@ func BuildPrompt(alertName, alertState, where, description, source string) strin
 		report.Instructions
 }
 
+// CorrectionPrompt is the message that sends an answer without scripts that can run back to the
+// agent, in the thread that holds its investigation: what is wrong with it, and the rules those
+// problems break. It asks for the whole structured block again, not a patch of it.
+func CorrectionPrompt(problems []string) string {
+	var b strings.Builder
+	b.WriteString("Your answer cannot be stored: its howToFix would leave the incident with no scripts that run. What is wrong with it:\n")
+	for _, p := range problems {
+		b.WriteString("\n- " + p)
+	}
+	b.WriteString("\n\nAnswer again for the same investigation, ending with exactly ONE fenced ```json block that follows the rules " +
+		"you were given, with these problems fixed. Precondition and verify test the root-cause object, never the Alert CR " +
+		"(alerts.observability.krateo.io). Name core kinds by their plural alone (nodes, pods), never with a .core suffix. " +
+		"Every jq program must parse: pass text with --arg. Read the cluster again only for a value a script needs and you " +
+		"have not read.")
+	return b.String()
+}
+
 // Process logs a HyperDX notification. It opens nothing: the reconcile mirrors every alert's state
 // on each pass and fires the firing ones, so a notification would only fire twice. The webhook
 // exists because a HyperDX alert needs a channel; the body is hyperdx.DefaultWebhookBody.

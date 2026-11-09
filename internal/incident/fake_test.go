@@ -20,7 +20,9 @@ var incidentsGR = schema.GroupResource{Group: "observability.krateo.io", Resourc
 //   - a create of an existing name is 409 AlreadyExists, and a create ignores status;
 //   - a patch whose body carries metadata.resourceVersion is conditioned on it (409 on a mismatch);
 //   - a status patch merges status only (null deletes) and bumps the resourceVersion;
-//   - the CRD's state rules: Resolved can only become Closed, and Closed is final (422).
+//   - the CRD's state rules: Resolved can only become Closed, and Closed is final (422);
+//   - the incident controller's handling of spec.closed: an object patch that sets it moves the
+//     incident to Closed with resolution.by user at once, unless noController.
 type fakeKube struct {
 	mu        sync.Mutex
 	incidents map[string]map[string]any // namespace/name -> object
@@ -31,8 +33,11 @@ type fakeKube struct {
 	// create just before a create lands. Both run unlocked.
 	beforePatch  func(ns, name string)
 	beforeCreate func(ns, name string)
-	// fail, when set, fails every call.
-	fail error
+	// fail, when set, fails every call; failPatch every object patch.
+	fail      error
+	failPatch error
+	// noController leaves spec.closed unhandled, as while the incident controller is down.
+	noController bool
 }
 
 type call struct {
@@ -244,6 +249,9 @@ func (f *fakeKube) Patch(_ context.Context, ns, name string, patch map[string]an
 	if f.fail != nil {
 		return f.fail
 	}
+	if f.failPatch != nil {
+		return f.failPatch
+	}
 	obj, ok := f.incidents[ns+"/"+name]
 	if !ok {
 		return apierrors.NewNotFound(incidentsGR, name)
@@ -262,6 +270,16 @@ func (f *fakeKube) Patch(_ context.Context, ns, name string, patch map[string]an
 	}
 	delete(body, "metadata")
 	merge(obj, body)
+	if closed, _ := obj["spec"].(map[string]any)["closed"].(bool); closed && !f.noController {
+		if obj["status"] == nil {
+			obj["status"] = map[string]any{}
+		}
+		st := obj["status"].(map[string]any)
+		if st["state"] != "Closed" {
+			st["state"] = "Closed"
+			st["resolution"] = map[string]any{"by": "user", "at": pyfmt.Isoformat(time.Now())}
+		}
+	}
 	f.bump(obj)
 	return nil
 }

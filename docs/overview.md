@@ -227,10 +227,12 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
    at most five, in `observability.krateo.io/supersedes-stale`;
 3. else the newest open incident without an analysis covers the firing: one still
    `Analyzing`, or one whose RCA failed (whatever text the failure left in `status.report`) less
-   than `config.failedAnalysisHold` (1800 s) after its `status.completedAt`. There is nothing to
-   compare with, and a new incident would rerun the analysis. Past the hold, a failed incident
-   takes no more firings and stays `Open` until a person closes it, so the next firing nothing
-   else covers opens a new incident with a fresh RCA;
+   than `config.failedAnalysisHold` (1800 s) after its `status.completedAt`; else the newest
+   incident closed as a failed analysis (`observability.krateo.io/closed-reason: analysis-failed`),
+   not yet superseded, inside the same hold. There is nothing to compare with, and a new incident
+   would rerun the analysis, which while the agent or its model is down fails the same way. Past
+   the hold, a failed incident takes no more firings, so the next firing nothing else covers opens
+   a new incident with a fresh RCA, which supersedes it (step 6);
 4. else, if the alert's latest incident is `Resolved` and its `status.resolution.at` is less than
    one `spec.interval` ago (5m when unset), that incident covers the firing the same way, and it
    stays `Resolved`. A `where` alert keeps counting the rows from before the fix for its lookback
@@ -239,9 +241,15 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 5. else, when the comparison gave no verdict, records nothing: whether the firing is a new problem
    is unknown, and the next pass asks again;
 6. otherwise creates `<alert>-<yyyymmdd-hhmmss>` (the firing's UTC time) with the label and
-   `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing`;
-7. runs the RCA on the incident's own kagent thread (contextId = uuid5 of its name), then writes
-   the analysis, `howToFix` and `state: Open` in one status write.
+   `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing`. It
+   supersedes the alert's failed analyses not yet superseded, newest first and at most five: it
+   names them in `observability.krateo.io/supersedes-failed`, each gets
+   `observability.krateo.io/superseded-by` naming it, and one still `Open` without scripts (from
+   before failed analyses were closed, or whose close was refused) is closed (`spec.closed`, with
+   the closed-reason annotation). A person's incident is never superseded;
+7. runs the RCA on the incident's own kagent thread (contextId = uuid5 of its name), checks its
+   scripts (see [Script checks](#script-checks)), then writes the analysis, `howToFix` and
+   `state: Open` in one status write.
 
 - One evaluation per alert runs at a time: while one is still comparing, the alert's next firing
   is skipped. The RCA runs after that evaluation ends, and its incident takes the firings that
@@ -253,14 +261,47 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
   kagent's `LLM error:`) runs again `config.analysisRetries` (2) times, `config.analysisRetryDelay`
   (120 s) after the first failure and twice as long after each next one, each on a kagent thread
   of its own. The incident stays `Analyzing` meanwhile.
-- An RCA that still fails, or whose answer is unstructured or has no usable `howToFix`, still
-  opens the incident, with `status.error` saying why it has no scripts.
-- An incident a human closed while it was analyzing stays `Closed`, which is final: the analysis
-  is written without a state.
-- At startup the provider opens every incident a restart left `Analyzing`, with the reason in
-  `error`, so it can be closed and the next firing opens a fresh one.
+- An answer without scripts that can run (no `json` block, a `howToFix` the parser drops, or
+  scripts the [script checks](#script-checks) refuse) goes back to the agent once, on the same
+  kagent thread, with what is wrong with it, and the corrected answer is checked the same way. A
+  `json` block without any `howToFix` is the agent's choice and is not sent back.
+- An RCA that still fails, or still has no scripts that can run, is a failed analysis. The
+  incident is closed, never left `Open` with nothing to check: one object patch sets
+  `spec.closed: true` and the annotation `observability.krateo.io/closed-reason: analysis-failed`,
+  then the analysis is written without a state, with `status.error` saying why there are no
+  scripts. incident-provider turns `spec.closed` into `Closed`, with `resolution.by: user` (the
+  CRD has no other value for it; the annotation says who closed it and why). A failed analysis
+  keeps covering its alert's firings for `config.failedAnalysisHold` (step 3), then the next
+  incident supersedes it (step 6). Should the close patch be refused, the analysis is written
+  `Open` with the error, and that next incident closes it.
+- An incident a human closed or moved on while it was analyzing keeps its state (`Closed` is
+  final): the analysis is written without a state, and a failed one is not closed again.
+- At startup the provider runs again the RCA of every incident a restart left `Analyzing`, off
+  the startup path, on a thread of its own (`<name>#recovery-<n>`), with its `spec.prompt` (and a
+  reanalysis' feedback), counted in `observability.krateo.io/analysis-recoveries`. An incident
+  interrupted again (one recovery already), or without a prompt, is closed as a failed analysis
+  with the reason in `error`. A person's incident whose first write never landed is opened with
+  it. An incident closed in spec is left to incident-provider.
 - The alert returning to OK changes nothing. From `Open` on, the incident controller runs its
   scripts and moves it, or a human closes it.
+
+## Script checks
+
+Before the writer stores a `howToFix` (`internal/scriptcheck`), every script must pass four
+checks, each a failure seen on a live cluster:
+
+| Rule | Scripts | Refuses |
+|---|---|---|
+| bash syntax | all four | a script bash cannot parse, checked with mvdan.cc/sh's bash parser, in process: the image is distroless, without bash, and nothing the model wrote runs here |
+| jq syntax | all four | a jq program, passed literally to `jq`, that does not parse (github.com/itchyny/gojq's parser), such as `"\-"`: jq exits 3 and the check never answers. Only the parse is checked: gojq's builtins differ from jq's |
+| the Alert CR | precondition, verify | a read of `alerts.observability.krateo.io` (singular, with its version, as `type/name`, in a `--raw` path or assigned to a variable), or `alert`/`alerts` where kubectl takes a kind: the checks test the root-cause object, never the Alert, which once edited or deleted leaves them unknown forever |
+| `.core` suffix | all four | a core kind with a group suffix (`nodes.core`, `pods.v1.core`) where kubectl takes a kind: kubectl rejects it |
+
+The extraction is conservative: a word that is not literal in the source (a variable, a command
+substitution) is not guessed at, so only what is certainly wrong is refused. A refused precondition,
+apply or verify drops the whole `howToFix`; a refused rollback alone is left out, with a
+`missingContext` line, as the parser leaves out an unusable one. A script known to be broken is
+never written.
 
 ## Alerts a person analyses
 

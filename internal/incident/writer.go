@@ -4,14 +4,16 @@
 // one that is ALERT. A firing an incident covers (see pick) writes at most its cover time (see
 // recordCover); any other opens a new incident: it creates the Incident in state Analyzing, runs
 // the incident-agent RCA over A2A, and writes the analysis with its howToFix scripts in state Open.
-// An alert therefore has any number of incidents, one per problem. From Open on, the incident
-// controller runs the scripts and moves the Incident.
+// An analysis that gives no scripts that can run is closed instead (see RunAnalysis). An alert
+// therefore has any number of incidents, one per problem. From Open on, the incident controller
+// runs the scripts and moves the Incident.
 package incident
 
 import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +27,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/compare"
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 	"github.com/krateo-platformops/alert-provider/internal/report"
+	"github.com/krateo-platformops/alert-provider/internal/scriptcheck"
 	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
@@ -45,6 +48,27 @@ const (
 	// They are left as they are: their lifecycle is the incident controller's.
 	AnnotationSupersedesStale = "observability.krateo.io/supersedes-stale"
 	maxSupersedes             = 5
+	// AnnotationClosedReason, on an incident the writer closed, says why; the close itself is
+	// spec.closed, which the incident controller turns into state Closed. ClosedAnalysisFailed: its
+	// RCA gave no scripts that can run, after the retries and the correction (see RunAnalysis), and
+	// status.error says why. Open, it would have nothing to check and nobody would move it on. It
+	// still takes its alert's firings for FailedAnalysisHold (see pick).
+	AnnotationClosedReason = "observability.krateo.io/closed-reason"
+	ClosedAnalysisFailed   = "analysis-failed"
+	// AnnotationSupersedesFailed, on a new incident, names the failed analyses of its alert it
+	// supersedes, newest first, comma-separated, at most maxSupersedes: the closed ones not yet
+	// superseded, and any still Open without scripts (from before failed analyses were closed, or
+	// whose close was refused), which it closes. Each gets AnnotationSupersededBy naming it.
+	AnnotationSupersedesFailed = "observability.krateo.io/supersedes-failed"
+	AnnotationSupersededBy     = "observability.krateo.io/superseded-by"
+	// AnnotationRecoveries, on an incident a restart left Analyzing, counts the times its RCA ran
+	// again at startup. Past maxRecoveries it is closed as a failed analysis instead: an RCA that
+	// takes the process down with it must not run at every start.
+	AnnotationRecoveries = "observability.krateo.io/analysis-recoveries"
+	maxRecoveries        = 1
+	// correctionTurns is how many times an answer without scripts that can run goes back to the
+	// agent, in the same kagent thread, with what is wrong with it.
+	correctionTurns = 1
 	// coverStampsPerWindow bounds the cover-time writes: an incident's cover time is rewritten only
 	// once it is older than CoverWindow/coverStampsPerWindow, so an alert that fires every pass
 	// patches its incident about 24 times per window, not every pass.
@@ -94,8 +118,8 @@ type Config struct {
 	// waits, Analyzing, for a free slot.
 	MaxConcurrentAnalyses int
 	// FailedAnalysisHold is how long an incident whose RCA failed keeps taking its alert's
-	// firings, from the failure (status.completedAt). Past it, a firing nothing else covers opens a
-	// new incident and RCA.
+	// firings, from the failure (status.completedAt), though it is closed. Past it, a firing nothing
+	// else covers opens a new incident and RCA, which supersedes it.
 	FailedAnalysisHold time.Duration
 	// MaxCandidates is how many of an alert's newest open, analyzed incidents one comparison weighs.
 	MaxCandidates int
@@ -215,9 +239,39 @@ func state(obj map[string]any) (string, bool) {
 	return pyfmt.Str(v), true
 }
 
+// ended says the incident is over: Resolved or Closed, or spec.closed set and not yet turned into
+// Closed by the incident controller.
 func ended(obj map[string]any) bool {
 	s, _ := state(obj)
-	return s == "Resolved" || s == "Closed"
+	return s == "Resolved" || s == "Closed" || closedInSpec(obj)
+}
+
+func closedInSpec(obj map[string]any) bool {
+	b, _ := spec(obj)["closed"].(bool)
+	return b
+}
+
+func annotations(obj map[string]any) map[string]any {
+	a, _ := metadata(obj)["annotations"].(map[string]any)
+	return a
+}
+
+func humanIncident(obj map[string]any) bool {
+	labels, _ := metadata(obj)["labels"].(map[string]any)
+	return labels[LabelAnalysis] == AnalysisHuman
+}
+
+// closedFailed says the writer closed the incident as a failed analysis.
+func closedFailed(obj map[string]any) bool {
+	return annotations(obj)[AnnotationClosedReason] == ClosedAnalysisFailed
+}
+
+// openFailed says the incident is Open with an error and no scripts: an RCA that failed before
+// failed analyses were closed, or one whose close was refused. A person's incident is not one.
+func openFailed(obj map[string]any) bool {
+	s, _ := state(obj)
+	st := status(obj)
+	return s == "Open" && !closedInSpec(obj) && !humanIncident(obj) && st["howToFix"] == nil && pyfmt.Truthy(st["error"])
 }
 
 func analyzingOrUnset(obj map[string]any) bool {
@@ -270,9 +324,12 @@ func resolvedWithin(incident map[string]any, at time.Time, grace time.Duration) 
 // while its RCA runs, and for hold after the RCA failed, counted from status.completedAt, else
 // from its creation.
 func holdsFirings(incident map[string]any, at time.Time, hold time.Duration) bool {
-	if analyzingOrUnset(incident) {
-		return true
-	}
+	return analyzingOrUnset(incident) || withinHold(incident, at, hold)
+}
+
+// withinHold says the incident's RCA failed less than hold before at, counted from
+// status.completedAt, else from its creation.
+func withinHold(incident map[string]any, at time.Time, hold time.Duration) bool {
 	since, ok := timestamp(status(incident)["completedAt"])
 	if !ok {
 		since, ok = timestamp(metadata(incident)["creationTimestamp"])
@@ -312,12 +369,14 @@ func (w *Writer) alertIncidents(ctx context.Context, ns, alert string) ([]map[st
 //     (see verdict) names as the cause of the alert's current records, among the newest
 //     MaxCandidates that are not stale;
 //  2. the newest open incident without an analysis: one still Analyzing, or one whose RCA failed
-//     less than FailedAnalysisHold ago. There is nothing to compare with, and a new incident would
-//     rerun the analysis. Past the hold, a failed incident takes no more firings, so a new
-//     incident gets a fresh RCA;
+//     less than FailedAnalysisHold ago; else the newest incident closed as a failed analysis
+//     (closedFailed), not yet superseded, less than FailedAnalysisHold after its failure. There is
+//     nothing to compare with, and a new incident would rerun the analysis, which while the agent
+//     or its model is down fails the same way. Past the hold, a failed incident takes no more
+//     firings, so a new incident gets a fresh RCA and supersedes it;
 //  3. the alert's latest incident when it is Resolved less than grace (one spec.interval) ago: a
 //     `where` alert keeps counting rows from before the fix for its lookback window, and those
-//     belong to the incident the fix resolved. A Closed incident never takes a firing.
+//     belong to the incident the fix resolved. A Closed incident takes no firing past rule 2.
 //
 // rows returns the alert's current records; it is called only when there is an incident to
 // compare with. It returns a compare.NoVerdict when the comparison gave no verdict and nothing
@@ -385,10 +444,57 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 			return i, stale, nil
 		}
 	}
+	var failed []map[string]any
+	for _, i := range items {
+		if closedFailed(i) && annotations(i)[AnnotationSupersededBy] == nil {
+			failed = append(failed, i)
+		}
+	}
+	if f := newest(failed); f != nil && withinHold(f, at, w.cfg.FailedAnalysisHold) {
+		return f, stale, nil
+	}
 	if latest := newest(items); latest != nil && resolvedWithin(latest, at, grace) {
 		return latest, stale, nil
 	}
 	return nil, stale, noVerdict
+}
+
+// supersedable are the failed analyses of an alert a new incident supersedes, newest first, at most
+// maxSupersedes: the ones closed as failed analyses and the ones still Open without scripts (see
+// openFailed), not yet superseded.
+func supersedable(items []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, i := range items {
+		if annotations(i)[AnnotationSupersededBy] == nil && (closedFailed(i) || openFailed(i)) {
+			out = append(out, i)
+		}
+	}
+	sort.SliceStable(out, func(a, b int) bool { return less(sortKey(out[b]), sortKey(out[a])) })
+	return out[:min(len(out), maxSupersedes)]
+}
+
+// supersede links each failed analysis to the incident name that supersedes it, and closes the
+// ones still Open. A failure is logged: the new incident names them either way.
+func (w *Writer) supersede(ctx context.Context, ns, name string, failed []map[string]any) {
+	for _, f := range failed {
+		old := str(metadata(f), "name")
+		ann := map[string]any{AnnotationSupersededBy: name}
+		patch := map[string]any{"metadata": map[string]any{"annotations": ann}}
+		closing := openFailed(f)
+		if closing {
+			ann[AnnotationClosedReason] = ClosedAnalysisFailed
+			patch["spec"] = map[string]any{"closed": true}
+		}
+		if err := w.kube.Patch(ctx, ns, old, patch); err != nil {
+			logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: not marked superseded by %s (%s)", ns, old, name, err))
+			continue
+		}
+		done := "superseded"
+		if closing {
+			done = "closed, superseded"
+		}
+		logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: %s by %s", ns, old, done, name))
+	}
 }
 
 // verdict is the comparison of a firing with candidates, named names: the alert's last answered
@@ -514,8 +620,23 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		labels[LabelAnalysis] = AnalysisHuman
 	}
 	meta := map[string]any{"name": name, "namespace": ns, "labels": labels}
+	ann := map[string]any{}
 	if len(stale) > 0 {
-		meta["annotations"] = map[string]any{AnnotationSupersedesStale: strings.Join(stale[:min(len(stale), maxSupersedes)], ",")}
+		ann[AnnotationSupersedesStale] = strings.Join(stale[:min(len(stale), maxSupersedes)], ",")
+	}
+	var failed []map[string]any
+	if !alert.HumanAnalysis {
+		failed = supersedable(items)
+	}
+	if len(failed) > 0 {
+		names := make([]string, len(failed))
+		for i, f := range failed {
+			names[i] = str(metadata(f), "name")
+		}
+		ann[AnnotationSupersedesFailed] = strings.Join(names, ",")
+	}
+	if len(ann) > 0 {
+		meta["annotations"] = ann
 	}
 	created, err := w.kube.Create(ctx, map[string]any{
 		"apiVersion": IncidentGVK.GroupVersion().String(), "kind": IncidentGVK.Kind,
@@ -540,13 +661,15 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		return nil, len(stale), err
 	}
 	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: opened", ns, name))
+	w.supersede(ctx, ns, name, failed)
 	return created, len(stale), nil
 }
 
-// finish writes the analysis. An incident still Analyzing becomes Open; in any other state (a
-// human closed it, or applied a fix, while it was analyzing) the analysis is written without a
-// state, since Closed is final and the controller owns the rest.
-func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any) error {
+// finish writes the analysis. With open, an incident still Analyzing becomes Open; in any other
+// state (a human closed it, or applied a fix, while it was analyzing) the analysis is written
+// without a state, since Closed is final and the controller owns the rest. Without open no state
+// is written at all: the incident is being closed (see giveUp).
+func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any, open bool) error {
 	for range writeAttempts {
 		incident, err := w.kube.Get(ctx, ns, name)
 		if err != nil {
@@ -556,7 +679,7 @@ func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any)
 		for k, v := range st {
 			body[k] = v
 		}
-		if analyzingOrUnset(incident) {
+		if open && analyzingOrUnset(incident) && !closedInSpec(incident) {
 			body["state"] = "Open"
 		}
 		if err := w.patchStatus(ctx, ns, incident, body); err != nil {
@@ -570,11 +693,41 @@ func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any)
 	return fmt.Errorf("incident %s/%s: no status write succeeded in %d attempts", ns, name, writeAttempts)
 }
 
-// RecoverInterrupted opens every incident a restart left Analyzing (or before its first status
-// write), with the reason in error. An Analyzing incident takes every firing of its alert that no
-// analyzed incident covers, and is never checked. Open with error, it says why it has no scripts
-// and can be closed, and the next firing then opens a fresh one. An analysis still running in
-// another replica overwrites error when it finishes.
+// giveUp ends an analysis that gave no scripts that can run: it closes the incident, with
+// spec.closed and AnnotationClosedReason ClosedAnalysisFailed in one patch, then writes the
+// analysis (status.error says why it failed) without a state; the incident controller moves it to
+// Closed. Open, it would have nothing to check and nobody would move it on. An incident a human
+// closed or moved on meanwhile is left to them, with the analysis written. It reports whether it
+// closed the incident. A refused close falls back to Open with the error, as before failed analyses
+// were closed: the next incident of the alert supersedes and closes it.
+func (w *Writer) giveUp(ctx context.Context, ns, name string, st map[string]any) (bool, error) {
+	incident, err := w.kube.Get(ctx, ns, name)
+	if err != nil {
+		return false, err
+	}
+	if !analyzingOrUnset(incident) || closedInSpec(incident) {
+		return false, w.finish(ctx, ns, name, st, false)
+	}
+	if err := w.kube.Patch(ctx, ns, name, map[string]any{
+		"metadata": map[string]any{"annotations": map[string]any{AnnotationClosedReason: ClosedAnalysisFailed}},
+		"spec":     map[string]any{"closed": true}}); err != nil {
+		logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[err] incident %s/%s: not closed (%s); opened with the error", ns, name, err))
+		return false, w.finish(ctx, ns, name, st, true)
+	}
+	return true, w.finish(ctx, ns, name, st, false)
+}
+
+// RecoverInterrupted handles every incident a restart left Analyzing (or before its first status
+// write), before any firing can open one. An Analyzing incident takes every firing of its alert that
+// no analyzed incident covers and is never checked, so none may stay so:
+//   - one whose RCA has not run again yet runs it again, off the caller, on a thread of its own
+//     (<name>#recovery-<n>), with its spec.prompt (a reanalysis' feedback too), counted in
+//     AnnotationRecoveries;
+//   - one it already ran again maxRecoveries times, or without a prompt, is closed as a failed
+//     analysis with Interrupted in error (see giveUp);
+//   - a person's incident gets the first write it missed: Open, with HumanOnly.
+//
+// An incident closed in spec is left to the incident controller.
 func (w *Writer) RecoverInterrupted(ctx context.Context) {
 	ns := w.cfg.Namespace
 	items, err := w.kube.List(ctx, ns, LabelAlert)
@@ -583,17 +736,55 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 		return
 	}
 	for _, incident := range items {
-		if !analyzingOrUnset(incident) {
+		if !analyzingOrUnset(incident) || closedInSpec(incident) {
 			continue
 		}
 		name := str(metadata(incident), "name")
-		if err := w.patchStatus(ctx, ns, incident, map[string]any{"state": "Open", "error": Interrupted,
-			"completedAt": pyfmt.Isoformat(w.now())}); err != nil { // a 409 means another writer moved it
-			w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
+		if humanIncident(incident) {
+			if err := w.patchStatus(ctx, ns, incident, map[string]any{"state": "Open", "error": HumanOnly,
+				"completedAt": pyfmt.Isoformat(w.now())}); err != nil {
+				w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
+			}
 			continue
 		}
-		w.log.Info(fmt.Sprintf("[incident] %s/%s: interrupted, opened", ns, name))
+		w.recoverAnalysis(ctx, ns, incident)
 	}
+}
+
+func (w *Writer) recoverAnalysis(ctx context.Context, ns string, incident map[string]any) {
+	m := metadata(incident)
+	name := str(m, "name")
+	n, _ := strconv.Atoi(pyfmt.Str(annotations(incident)[AnnotationRecoveries]))
+	prompt := str(spec(incident), "prompt")
+	if n >= maxRecoveries || prompt == "" {
+		closed, err := w.giveUp(ctx, ns, name, map[string]any{"error": Interrupted, "completedAt": pyfmt.Isoformat(w.now())})
+		switch {
+		case err != nil:
+			w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
+		case closed:
+			w.log.Info(fmt.Sprintf("[incident] %s/%s: interrupted after %d recoveries, closed as a failed analysis", ns, name, n))
+		}
+		return
+	}
+	// Conditioned on the resourceVersion read: another writer that moved it on owns it now.
+	if err := w.kube.Patch(ctx, ns, name, map[string]any{"metadata": map[string]any{"resourceVersion": m["resourceVersion"],
+		"annotations": map[string]any{AnnotationRecoveries: strconv.Itoa(n + 1)}}}); err != nil {
+		w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
+		return
+	}
+	if _, ok := state(incident); !ok {
+		if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{"status": map[string]any{"state": "Analyzing"}}); err != nil {
+			w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
+			return
+		}
+	}
+	if req, ok := status(incident)["reanalysis"].(map[string]any); ok {
+		// The reanalysis cleared the previous analysis; its feedback is what is left of it.
+		prompt = ReanalysisPrompt(prompt, map[string]any{}, str(req, "feedback"))
+	}
+	key := fmt.Sprintf("%s#recovery-%d", name, n+1)
+	w.log.Info(fmt.Sprintf("[incident] %s/%s: interrupted, analyzing again (recovery %d of %d)", ns, name, n+1, maxRecoveries))
+	w.spawn(func() { w.RunAnalysis(ctx, ns, name, prompt, key) })
 }
 
 // Fire is one evaluation of a firing Alert, from its reconcile (about every 60 s). The firing
@@ -676,11 +867,16 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	}
 }
 
-// RunAnalysis is the RCA of an Analyzing incident, then its one status write: the analysis and
-// state Open. key names the run's kagent threads: the incident's name for its first analysis.
-// A transient failure is retried AnalysisRetries times, each in a thread of its own. error says why
-// an incident has no howToFix: the call failed, the answer was empty or unstructured, or its
-// scripts were unusable. It is cleared when howToFix is written.
+// RunAnalysis is the RCA of an Analyzing incident, then its one status write. key names the run's
+// kagent threads: the incident's name for its first analysis.
+//
+//   - A transient failure (see analysis) is retried AnalysisRetries times, AnalysisRetryDelay after
+//     the first and twice as long after each next one, each in a thread of its own.
+//   - An answer without scripts that can run (no structured block, an unusable howToFix, or scripts
+//     scriptcheck refuses) goes back to the agent correctionTurns times, in the same thread, with
+//     what is wrong with it.
+//   - An analysis with scripts is written in state Open, with error cleared. One without is closed
+//     as a failed analysis, with error saying why (see giveUp): never left Open with nothing to run.
 //
 // Its span is incident.analyze, with a client span per A2A call; neither carries the prompt or
 // the answer.
@@ -690,58 +886,120 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) 
 	defer span.End()
 	// Bound to incident.analyze, whichever span started the analysis.
 	log := logging.WithContext(w.log, ctx)
-	var st map[string]any
-	var why string // the last attempt's transient failure, "" when it did not fail
+	var r result
 	for attempt := 0; ; attempt++ {
 		span.SetAttributes(attrAttempts.Int(attempt + 1))
 		id := key
 		if attempt > 0 {
 			id = fmt.Sprintf("%s#retry-%d", key, attempt)
 		}
-		st, why = w.analysis(ctx, ns, name, prompt, contextID(id))
-		if why == "" || attempt >= w.cfg.AnalysisRetries {
+		r = w.analysis(ctx, ns, name, prompt, contextID(id))
+		if r.transient == "" || attempt >= w.cfg.AnalysisRetries {
 			break
 		}
 		delay := w.cfg.AnalysisRetryDelay << attempt
-		log.Info(fmt.Sprintf("[a2a] %s/%s: %s; retry %d of %d in %s", ns, name, why, attempt+1, w.cfg.AnalysisRetries, delay))
+		log.Info(fmt.Sprintf("[a2a] %s/%s: %s; retry %d of %d in %s", ns, name, r.transient, attempt+1, w.cfg.AnalysisRetries, delay))
 		if !w.sleep(ctx, delay) {
 			break
 		}
 	}
-	if why != "" {
-		span.SetStatus(codes.Error, why) // e.g. "the call failed"; the A2A client span has the error
+	if r.transient != "" {
+		span.SetStatus(codes.Error, r.transient) // e.g. "the call failed"; the A2A client span has the error
 	}
-	st["completedAt"] = pyfmt.Isoformat(w.now())
-	if err := w.finish(ctx, ns, name, st); err != nil { // RecoverInterrupted opens it after a restart
+	turns := 0
+	for ; turns < correctionTurns && r.transient == "" && len(r.correct) > 0; turns++ {
+		r = w.correction(ctx, ns, name, r)
+	}
+	span.SetAttributes(attrCorrections.Int(turns))
+	r.st["completedAt"] = pyfmt.Isoformat(w.now())
+	if r.st["howToFix"] == nil {
+		closed, err := w.giveUp(ctx, ns, name, r.st)
+		if err != nil { // RecoverInterrupted handles it after a restart
+			log.Info(fmt.Sprintf("[err] incident %s/%s: analysis not written (%s)", ns, name, err))
+			span.SetStatus(codes.Error, err.Error())
+			return
+		}
+		outcome := "written (howToFix=no)"
+		if closed {
+			outcome = "failed, closed"
+		}
+		log.Info(fmt.Sprintf("[incident] %s/%s: analysis %s: %s", ns, name, outcome, pyfmt.Cut(pyfmt.Str(r.st["error"]), 300)))
+		return
+	}
+	if err := w.finish(ctx, ns, name, r.st, true); err != nil { // RecoverInterrupted handles it after a restart
 		log.Info(fmt.Sprintf("[err] incident %s/%s: analysis not written (%s)", ns, name, err))
 		span.SetStatus(codes.Error, err.Error())
 		return
 	}
-	fix := "no"
-	if st["howToFix"] != nil {
-		fix = "yes"
-	}
-	log.Info(fmt.Sprintf("[ok] incident %s/%s: analysis written (howToFix=%s)", ns, name, fix))
+	log.Info(fmt.Sprintf("[ok] incident %s/%s: analysis written (howToFix=yes)", ns, name))
 }
 
 // llmError starts the answer kagent streams when its model call failed.
 const llmError = "LLM error:"
 
-// analysis is one RCA run: the status fields it writes, and why the run failed transiently, or ""
-// when it did not. A failed call, an empty answer and an answer that is only kagent's model error
-// are transient: the gateway or the model provider failed, and the same prompt may succeed later.
-// An answer without usable scripts is not: the agent answered.
-func (w *Writer) analysis(ctx context.Context, ns, name, prompt, contextID string) (map[string]any, string) {
-	st := map[string]any{}
+// result is one RCA answer: the status fields it writes; why it failed transiently, "" when it did
+// not; and what a correction turn would fix, nil when it has scripts or a correction cannot help.
+// contextID and ledger are its thread and its tool results.
+type result struct {
+	st        map[string]any
+	transient string
+	correct   []string
+	contextID string
+	ledger    []report.ToolResult
+}
+
+// analysis is one RCA run. A failed call, an empty answer and an answer that is only kagent's
+// model error are transient: the gateway or the model provider failed, and the same prompt may
+// succeed later. An answer without usable scripts is not: the agent answered (see evaluate).
+func (w *Writer) analysis(ctx context.Context, ns, name, prompt, contextID string) result {
 	w.slots <- struct{}{}
 	raw, ledger, err := w.analyze(ctx, prompt, contextID)
 	<-w.slots
-	if err != nil { // a failed RCA still opens the incident
-		st["error"] = "The analysis failed: " + pyfmt.Cut(err.Error(), 500)
-		return st, "the call failed"
+	if err != nil { // a failed RCA still writes why
+		return result{st: map[string]any{"error": "The analysis failed: " + pyfmt.Cut(err.Error(), 500)},
+			transient: "the call failed", contextID: contextID}
 	}
 	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
-	prose, v2 := report.Parse(raw, ledger)
+	r := evaluate(raw, ledger)
+	r.contextID, r.ledger = contextID, ledger
+	return r
+}
+
+// correction sends first's problems back to the agent in first's thread, and is the corrected
+// answer when it has scripts. Otherwise first stands, its error saying the correction failed too.
+func (w *Writer) correction(ctx context.Context, ns, name string, first result) result {
+	log := logging.WithContext(w.log, ctx)
+	log.Info(fmt.Sprintf("[a2a] %s/%s: no scripts that can run (%d problems); asking for a correction", ns, name, len(first.correct)))
+	w.slots <- struct{}{}
+	raw, ledger, err := w.analyze(ctx, CorrectionPrompt(first.correct), first.contextID)
+	<-w.slots
+	why := ""
+	if err != nil {
+		why = "its call failed: " + pyfmt.Cut(err.Error(), 300)
+	} else {
+		log.Info(fmt.Sprintf("[a2a] %s/%s: correction, %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
+		// The corrected block describes the same investigation: the first turn's reads count too.
+		r := evaluate(raw, append(append([]report.ToolResult{}, first.ledger...), ledger...))
+		if r.st["howToFix"] != nil {
+			r.contextID, r.ledger = first.contextID, append(first.ledger, ledger...)
+			return r
+		}
+		why = pyfmt.Str(r.st["error"])
+	}
+	first.st["error"] = fmt.Sprintf("%s It was sent back once with these problems, and the correction gave none either: %s",
+		pyfmt.Str(first.st["error"]), why)
+	first.correct = nil
+	return first
+}
+
+// evaluate is an RCA answer as status fields. It has scripts when report.Parse keeps a howToFix and
+// scriptcheck finds no problem in its precondition, apply and verify; a refused rollback is left out
+// alone, as the parser leaves out an unusable one. Otherwise error says why there are none, and
+// correct holds what a correction turn would fix: not for an empty answer or a model error, which
+// are transient, nor for a structured block without any howToFix, which the agent chose.
+func evaluate(raw string, ledger []report.ToolResult) result {
+	st := map[string]any{}
+	prose, v2, fixProblems := report.ParseFix(raw, ledger)
 	if pyfmt.Strip(prose) != "" {
 		st["report"] = prose
 	}
@@ -750,20 +1008,77 @@ func (w *Writer) analysis(ctx context.Context, ns, name, prompt, contextID strin
 			st[k] = v
 		}
 	}
-	_, hasFix := v2["howToFix"]
+	fix, hasFix := v2["howToFix"].(map[string]any)
 	switch {
 	case hasFix:
-		st["error"] = nil
+		return refuse(st, fix, scriptcheck.Check(fix))
 	case pyfmt.Strip(prose) == "" && len(v2) == 0:
 		st["error"] = "The analysis returned no output."
-		return st, "the answer was empty"
+		return result{st: st, transient: "the answer was empty"}
 	case len(v2) == 0:
 		st["error"] = "The analysis returned no structured block, so the incident has no scripts to check or fix it."
 		if strings.HasPrefix(pyfmt.Strip(prose), llmError) {
-			return st, "the model call failed"
+			return result{st: st, transient: "the model call failed"}
 		}
-	default:
-		st["error"] = "The analysis returned no usable howToFix, so the incident has no scripts to check or fix it."
+		return result{st: st, correct: []string{"the answer has no ```json block, so it gives no scripts."}}
 	}
-	return st, ""
+	st["error"] = "The analysis returned no usable howToFix, so the incident has no scripts to check or fix it."
+	if len(fixProblems) == 1 && fixProblems[0] == report.FixNone {
+		return result{st: st}
+	}
+	return result{st: st, correct: []string{"howToFix is unusable: " + strings.Join(fixProblems, "; ") + "."}}
+}
+
+// refuse applies scriptcheck's problems to an analysis with scripts: none, and it stands with
+// error cleared; a rollback's alone, and the rollback is left out with a missingContext line; any
+// other, and howToFix is dropped, error and missingContext say why, and every problem is one to
+// correct. A script known to be broken is never written.
+func refuse(st, fix map[string]any, problems []scriptcheck.Problem) result {
+	var lines, others []string
+	for _, p := range problems {
+		lines = append(lines, p.String())
+		if p.Script != "rollback" {
+			others = append(others, p.String())
+		}
+	}
+	switch {
+	case len(problems) == 0:
+		st["error"] = nil
+		return result{st: st}
+	case len(others) == 0:
+		kept := make(map[string]any, len(fix))
+		for k, v := range fix {
+			if k != "rollback" {
+				kept[k] = v
+			}
+		}
+		st["howToFix"] = kept
+		st["missingContext"] = withGap(st["missingContext"], fmt.Sprintf(
+			"No usable rollback (%s): undoing apply is left to whoever runs it.", strings.Join(lines, "; ")))
+		st["error"] = nil
+		return result{st: st}
+	}
+	delete(st, "howToFix")
+	why := strings.Join(others, "; ")
+	st["error"] = pyfmt.Cut("The analysis returned scripts that cannot run ("+why+"), so the incident has no scripts to check or fix it.", 2000)
+	st["missingContext"] = withGap(st["missingContext"], pyfmt.Cut(
+		"No usable howToFix ("+why+"): the incident has no scripts to check or fix it.", 2000))
+	return result{st: st, correct: lines}
+}
+
+// withGap is missingContext with line appended, at most 64 lines as the parser keeps.
+func withGap(missing any, line string) []string {
+	var out []string
+	switch l := missing.(type) {
+	case []string:
+		out = append(out, l...)
+	case []any:
+		for _, x := range l {
+			out = append(out, pyfmt.Str(x))
+		}
+	}
+	if len(out) > 63 {
+		out = out[:63]
+	}
+	return append(out, line)
 }

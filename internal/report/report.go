@@ -417,7 +417,7 @@ func applyAction(v any) (map[string]any, string) {
 // out. Other keys are dropped.
 func howToFix(v any) (map[string]any, []string, []string) {
 	if v == nil {
-		return nil, []string{"none returned"}, nil
+		return nil, []string{FixNone}, nil
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -498,6 +498,9 @@ func candidateBlocks(text string) []candidate {
 	return out
 }
 
+// FixNone is ParseFix's problem for a structured block without a howToFix.
+const FixNone = "none returned"
+
 // Parse returns the prose and the v2 status fields of the agent's raw answer. The fields are empty
 // when no valid structured block exists (v1 fallback); the prose is the answer with the block
 // stripped, or the whole answer on fallback.
@@ -506,6 +509,13 @@ func candidateBlocks(text string) []candidate {
 // A2A stream. When present it overrides what the model says about its own retrieval: a model that
 // never mentions having been denied is the case the evidence policy exists for.
 func Parse(text string, ledger []ToolResult) (string, map[string]any) {
+	prose, v2, _ := ParseFix(text, ledger)
+	return prose, v2
+}
+
+// ParseFix is Parse, and why the structured block it used has no howToFix ("apply missing",
+// FixNone, ...): nil when it has one, or when there is no structured block.
+func ParseFix(text string, ledger []ToolResult) (string, map[string]any, []string) {
 	text = pyfmt.Strip(text)
 	for _, c := range candidateBlocks(text) {
 		data := c.data
@@ -549,11 +559,11 @@ func Parse(text string, ledger []ToolResult) (string, map[string]any) {
 		} else if len(fixNotes) > 0 {
 			v2["missingContext"] = append(head(current, 64-len(fixNotes)), fixNotes...)
 		}
-		return prose, v2
+		return prose, v2, fixProblems
 	}
 	// The fallback stays byte-identical: the writer tells an empty answer by an empty prose and no
 	// fields, and a banner here would make an empty A2A reply look like a result.
-	return text, map[string]any{}
+	return text, map[string]any{}, nil
 }
 
 // eqStr is Python's a == b where both must be strings to be equal.

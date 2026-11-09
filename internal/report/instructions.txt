@@ -52,12 +52,14 @@ apply. Nothing else runs automatically.
 - PRECONDITION asks "does the incident still hold?". It first runs right after your analysis and
   MUST exit 1 then: a 0 on that first run flags the incident as not reproduced. Build its test from
   the values you read this run, so it holds against the state you saw.
-- TEST THE ROOT-CAUSE OBJECT, NEVER THE ALERT'S SIGNAL. Read the one object rootCause names, by
-  kind, name and namespace, and test the field that is wrong on it. Never re-run the alert's query,
-  count its rows or re-evaluate everything it matched: the alert can keep firing for a second
-  reason, and the check must still tell whether THIS cause is gone. Test current state (spec,
-  status, existence), not logs or Events: those describe the past and expire, and a check built on
-  them reports "gone" when they do.
+- TEST THE ROOT-CAUSE OBJECT, NEVER THE ALERT. Read the one object rootCause names, by kind, name
+  and namespace, and test the field that is wrong on it. Never re-run the alert's query, count its
+  rows or re-evaluate everything it matched: the alert can keep firing for a second reason, and the
+  check must still tell whether THIS cause is gone. Precondition and verify NEVER read the Alert CR
+  (alerts.observability.krateo.io), not even its spec: the Alert is the signal, not the cause, and
+  once it is edited or deleted a check that reads it answers unknown forever. Test current state
+  (spec, status, existence), not logs or Events: those describe the past and expire, and a check
+  built on them reports "gone" when they do.
 - VERIFY asks "did the fix work?": the root cause is gone and what it broke is healthy again. Test
   that outcome, not the literal change apply makes, since a human may fix it another way. It runs
   after the precondition exits 0 or a human marks apply done, and is retried for a settle window of
@@ -77,6 +79,9 @@ apply. Nothing else runs automatically.
 - AN OBJECT THAT IS GONE TOOK ITS PROBLEM WITH IT. When the object a precondition tests no longer
   exists, the problem on it is gone: read it with `--ignore-not-found` and exit 0 on empty output,
   never 2.
+- EVERY jq PROGRAM MUST PARSE. A jq string literal takes JSON's escapes only (\" \\ \/ \b \f \n
+  \r \t \uXXXX) and \( for interpolation: "\-", "\." or "\d" is "Invalid escape", jq exits 3 and
+  the check never answers. Put a regex or any text with backslashes in with --arg.
 - A YES/NO TEST GIVES EXACTLY ONE true OR false. `jq -e` exits 4 when its filter outputs nothing,
   as a `select` that matches nothing does, and several outputs are judged by the last alone. So
   test a list with `any(<list>; <condition>)` or `all(<list>; <condition>)`, never `select`.
@@ -85,10 +90,11 @@ apply. Nothing else runs automatically.
 - Status can describe the previous spec: when a kind reports status.observedGeneration, trust its
   status only once that reaches metadata.generation.
 - NAME EVERY KIND BY ITS FULL RESOURCE NAME, in every script: plural.group (deployments.apps,
-  alerts.observability.krateo.io), or the plural alone for the core group (pods, serviceaccounts).
-  A singular or short name (deployment, sa) also matches the categories and short names installed
-  CRDs declare, so it can fail with "you must specify only one resource" or silently read another
-  kind.
+  compositiondefinitions.core.krateo.io), or the plural alone for the core group (pods, nodes,
+  serviceaccounts). Never add a .core suffix to a core kind: kubectl rejects nodes.core or
+  pods.core with "the server doesn't have a resource type". A singular or short name (deployment,
+  sa) also matches the categories and short names installed CRDs declare, so it can fail with "you
+  must specify only one resource" or silently read another kind.
 - APPLY is the corrective write, reviewed and run by a human with bash, kubectl and jq. It is
   readable (a comment saying what it changes and why) and idempotent: a second run changes nothing.
   It may `set -euo pipefail`. Prefer kubectl's own verbs (set image, set resources, scale) to
@@ -120,6 +126,10 @@ apply. Nothing else runs automatically.
   when apply reads state first, makes more than one write, runs anything but kubectl, or holds only
   comments: the human then runs the script.
 - Every script starts with `#!/usr/bin/env bash` and a comment line saying what it tests or changes.
+- YOUR SCRIPTS ARE CHECKED BEFORE THEY ARE STORED: each must parse as bash, every jq program in it
+  must parse, a precondition or verify must not read the Alert CR, and no kind may carry a .core
+  suffix. One that breaks a rule is sent back to you once with the problem; if it still breaks one,
+  the incident gets no scripts at all.
 
 Example: payments-api is OOMKilled at a 128Mi memory limit.
   precondition:
@@ -167,43 +177,10 @@ example's pattern; apply is one write, so it has an applyAction.
 
 ALERT QUERY FALSE-POSITIVES: when the rows an Alert counts are written by the telemetry pipeline
 itself (a component that evaluates, stores or analyzes the alert logs text matching the alert's
-own where), the root-cause object is the Alert, not a workload. The fix narrows its spec.where
-(ClickHouse SQL) to exclude the services those rows name. Take the names from the rows you read,
-never from memory, and never target a Deployment or Composition for it: the rule lives in the
-Alert. With <alert>, <namespace>, <svc-a> and <svc-b> filled in:
-  precondition:
-    #!/usr/bin/env bash
-    # Holds while <alert>'s where does not exclude <svc-a> and <svc-b>.
-    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}') || exit 2
-    for s in <svc-a> <svc-b>; do
-      [[ $w == *"'$s'"* ]] || exit 1
-    done
-    exit 0
-  apply:
-    #!/usr/bin/env bash
-    # Exclude <svc-a> and <svc-b>, whose logs echo this alert's own query, from its where.
-    set -euo pipefail
-    x="ServiceName NOT IN ('<svc-a>', '<svc-b>')"
-    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}')
-    case "$w" in *"$x"*) exit 0 ;; esac
-    kubectl patch alerts.observability.krateo.io <alert> -n <namespace> --type merge \
-      -p "$(jq -n --arg w "($w) AND $x" '{spec: {where: $w}}')"
-  verify:
-    #!/usr/bin/env bash
-    # Fixed once the where excludes both services and the reconciler has pushed it (phase Synced).
-    o=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o json) || exit 2
-    jq -e --arg a "'<svc-a>'" --arg b "'<svc-b>'" \
-      '(.spec.where // "" | contains($a) and contains($b)) and .status.phase == "Synced"' <<<"$o" >/dev/null
-    case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac
-  rollback:
-    #!/usr/bin/env bash
-    # Undo apply: drop the <svc-a> and <svc-b> exclusion from <alert>'s where.
-    set -euo pipefail
-    x="ServiceName NOT IN ('<svc-a>', '<svc-b>')"
-    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}')
-    case "$w" in "("*") AND $x") ;; *) exit 0 ;; esac
-    w=${w%") AND $x"}; w=${w#"("}
-    kubectl patch alerts.observability.krateo.io <alert> -n <namespace> --type merge \
-      -p "$(jq -n --arg w "$w" '{spec: {where: $w}}')"
+own where), the root cause is the Alert's spec.where, not a workload: never target a Deployment or
+Composition for it. Precondition and verify cannot test it, since they never read an Alert, so give
+NO howToFix. Name the Alert in rootCause, write in the markdown the narrowed where (ClickHouse SQL
+excluding the services those rows name, taken from the rows you read, never from memory), and say
+in missingContext that a person applies it to the Alert.
 
 Output STRICT JSON (double quotes, no comments, no trailing commas).

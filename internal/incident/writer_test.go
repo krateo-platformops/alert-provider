@@ -468,16 +468,19 @@ func TestAFailedRCAWithErrorProseTakesTheFiringUncompared(t *testing.T) {
 	eq(t, "rca", len(c.rca), 0)
 }
 
+// An Open failed analysis (from before failed analyses were closed) past the hold: the new
+// incident supersedes it and closes it.
 func TestAFailedRCAStopsTakingFiringsAfterTheHold(t *testing.T) {
 	c := newCase(t)
 	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open", completed: ago(hold + time.Minute)})
 	c.kube.writeStatus(ns, alertName+"-x", map[string]any{"error": "The analysis failed: 429"})
 	c.fire(fireOpt{})
-	x := st(c.kube.get(ns, alertName+"-x"))
+	x := c.kube.get(ns, alertName+"-x")
 	eq(t, "covered", c.took(alertName+"-x"), 0)
-	eq(t, "state", x["state"], "Open")
 	eq(t, "incidents", c.kube.count(), 2)
 	eq(t, "rca", len(c.rca), 1)
+	eq(t, "state", st(x)["state"], "Closed")
+	eq(t, "superseded by", annotation(x, AnnotationSupersededBy), str(metadata(c.opened(alertName+"-x")), "name"))
 }
 
 func TestAFailedRCAInsideTheHoldStillTakesTheFiring(t *testing.T) {
@@ -738,12 +741,12 @@ func TestAtMostMaxConcurrentAnalysesRCAsRunAtOnce(t *testing.T) {
 	eq(t, "peak", peak, 2)
 }
 
-func TestAFailedRCAOpensTheIncidentWithTheError(t *testing.T) {
+func TestAFailedRCAClosesTheIncidentWithTheError(t *testing.T) {
 	c := newCase(t)
 	c.rcaErr = errors.New("A2A timed out")
 	c.fire(fireOpt{})
 	s := st(c.kube.only(ns))
-	eq(t, "state", s["state"], "Open")
+	eq(t, "state", s["state"], "Closed")
 	if !strings.Contains(s["error"].(string), "A2A timed out") {
 		t.Errorf("error %q", s["error"])
 	}
@@ -759,7 +762,7 @@ func TestAnEmptyAnswerIsAnError(t *testing.T) {
 	c.answer = ""
 	c.fire(fireOpt{})
 	s := st(c.kube.only(ns))
-	eq(t, "status", []any{s["state"], s["error"]}, []any{"Open", "The analysis returned no output."})
+	eq(t, "status", []any{s["state"], s["error"]}, []any{"Closed", "The analysis returned no output."})
 }
 
 func TestAnUnstructuredAnswerKeepsItsProse(t *testing.T) {
@@ -833,36 +836,7 @@ func TestAnIncidentAHumanMovedOnKeepsItsState(t *testing.T) {
 	eq(t, "howToFix", s["howToFix"], how)
 }
 
-// --- recovery after a restart ---
-
-func TestIncidentsARestartLeftAnalyzingAreOpenedWithTheReason(t *testing.T) {
-	c := newCase(t)
-	c.kube.put(ns, "a-1", "a", seed{state: "Analyzing"})
-	c.kube.put(ns, "b-1", "b", seed{}) // no state: its first write never landed
-	c.kube.put(ns, "c-1", "c", seed{state: "Open"})
-	c.w.RecoverInterrupted(context.Background())
-	a, b, cc := st(c.kube.get(ns, "a-1")), st(c.kube.get(ns, "b-1")), st(c.kube.get(ns, "c-1"))
-	eq(t, "a", []any{a["state"], a["error"]}, []any{"Open", Interrupted})
-	eq(t, "b", b["state"], "Open")
-	if _, ok := a["completedAt"]; !ok { // the failed-RCA hold counts from here
-		t.Error("no completedAt")
-	}
-	if _, ok := cc["error"]; ok {
-		t.Error("an Open incident was touched")
-	}
-}
-
-func TestALateAnalysisClearsTheInterruption(t *testing.T) {
-	c := newCase(t)
-	c.duringRCA = func() { c.w.RecoverInterrupted(context.Background()) }
-	c.fire(fireOpt{})
-	s := st(c.kube.only(ns))
-	eq(t, "state", s["state"], "Open")
-	if _, ok := s["error"]; ok {
-		t.Errorf("error %v", s["error"])
-	}
-	eq(t, "howToFix", s["howToFix"], how)
-}
+// --- recovery after a restart: see failed_test.go ---
 
 func TestNoIncidentCRDIsNotAnError(t *testing.T) {
 	c := newCase(t)
@@ -874,7 +848,6 @@ func TestNoIncidentCRDIsNotAnError(t *testing.T) {
 
 func TestTwoSameDisplayNameAlertsGetTwoIncidents(t *testing.T) {
 	c := newCase(t)
-	c.answer = "analysis"
 	const display = "Krateo — composition reconcile errors"
 	for _, a := range []struct{ name, where string }{{"krateo-composition-reconcile-error", "where-k"}, {"sre-krateo-composition-reconcile-error", "where-s"}} {
 		c.w.Fire(context.Background(), Alert{Namespace: ns, Alert: compare.Alert{Name: a.name, DisplayName: display, Where: a.where, Threshold: "2"}}, c.recordsOf)
