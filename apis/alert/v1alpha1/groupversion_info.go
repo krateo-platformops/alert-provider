@@ -7,8 +7,9 @@ package v1alpha1
 import (
 	"reflect"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 // Package type metadata.
@@ -21,8 +22,9 @@ var (
 	// SchemeGroupVersion is group version used to register these objects.
 	SchemeGroupVersion = schema.GroupVersion{Group: Group, Version: Version}
 
-	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: SchemeGroupVersion}
+	// SchemeBuilder is used to add go types to the GroupVersionKind scheme. It is apimachinery's
+	// builder: controller-runtime's scheme.Builder is deprecated since v0.24.
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 )
 
 var (
@@ -37,6 +39,9 @@ var (
 	MetricGroupVersionKind = SchemeGroupVersion.WithKind(MetricKind)
 )
 
-func init() {
-	SchemeBuilder.Register(&Alert{}, &AlertList{}, &Metric{}, &MetricList{})
+// addKnownTypes registers the types as controller-runtime's scheme.Builder.Register did.
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(SchemeGroupVersion, &Alert{}, &AlertList{}, &Metric{}, &MetricList{})
+	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
+	return nil
 }
