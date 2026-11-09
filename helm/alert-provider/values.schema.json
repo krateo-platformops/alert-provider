@@ -170,6 +170,9 @@
               },
               "description": {
                 "type": "string"
+              },
+              "runbook": {
+                "type": "string"
               }
             },
             "additionalProperties": false

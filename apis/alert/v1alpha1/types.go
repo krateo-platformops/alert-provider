@@ -122,6 +122,13 @@ type AlertSpec struct {
 	// investigation reads it as the Alert's intent, and HyperDX sends it as the notification text.
 	Description string `json:"description,omitempty"`
 
+	// Runbook is the operator guidance for when the Alert fires (markdown): what to check, and
+	// what never to do. HyperDX sends it after the description, a blank line between them, and
+	// the investigation reads it as operator guidance before it proposes a fix. The portal does
+	// not show it. At most 3072 characters, and with the description at most HyperDX's 4096 for
+	// a notification text.
+	Runbook string `json:"runbook,omitempty"`
+
 	// GroupBy splits a metric Alert into one series per distinct value of these attribute keys,
 	// each read off the point, or off its resource when the point lacks it (as Labels match).
 	// HyperDX evaluates each series on its own, so one unhealthy series fires however many

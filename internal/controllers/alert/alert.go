@@ -335,7 +335,7 @@ func (e *external) tile(ctx context.Context, a *v1alpha1.Alert) (string, error) 
 func fields(home string, a *v1alpha1.Alert) hyperdx.AlertFields {
 	spec := a.Spec
 	f := hyperdx.AlertFields{Interval: spec.Interval, Threshold: threshold(spec),
-		ThresholdType: spec.ThresholdType, Message: spec.Description,
+		ThresholdType: spec.ThresholdType, Message: spec.Description, Runbook: spec.Runbook,
 		ConsecutiveWindows: a.Windows()}
 	if spec.ThresholdMax != "" {
 		f.ThresholdMax = spec.ThresholdMax
@@ -799,7 +799,7 @@ func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[strin
 	alert := incident.Alert{Namespace: a.Namespace, HumanAnalysis: a.Labels[incident.LabelAnalysis] == incident.AnalysisHuman, Alert: compare.Alert{
 		Name: a.Name, DisplayName: a.Spec.DisplayName, Where: a.Spec.Where, Interval: a.Spec.Interval,
 		Threshold: pyfmt.NumberStr(threshold(a.Spec)), ThresholdType: a.Spec.ThresholdType, Description: a.Spec.Description,
-		Source: a.Spec.Source,
+		Runbook: a.Spec.Runbook, Source: a.Spec.Source,
 	}}
 	hdx, sourceID, group := f.hdx(), hyperdx.ID(source), compare.GroupOf(a.Spec.Source)
 	records := func(ctx context.Context, where string, seconds int) ([]compare.Row, error) {

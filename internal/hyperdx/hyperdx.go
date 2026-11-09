@@ -679,6 +679,9 @@ type AlertFields struct {
 	// ThresholdMax is the range's upper bound for between and not_between; nil otherwise.
 	ThresholdMax any
 	Message      string
+	// Runbook is the Alert's operator guidance. The pushed message is Message (or its default),
+	// a blank line and Runbook, trimmed; Message alone when Runbook is blank.
+	Runbook string
 	// ConsecutiveWindows is HyperDX's numConsecutiveWindows, counted per group; 0 or 1 is one
 	// window, HyperDX's default, and is not sent.
 	ConsecutiveWindows int
@@ -693,6 +696,9 @@ func alertBody(name, dashboardID, tileID, webhookID string, f AlertFields) map[s
 	message := f.Message
 	if message == "" {
 		message = name + " threshold crossed — incident-agent will auto-triage."
+	}
+	if runbook := strings.TrimSpace(f.Runbook); runbook != "" {
+		message += "\n\n" + runbook
 	}
 	b := map[string]any{
 		"name":          name,
@@ -728,7 +734,8 @@ func windows(v any) string {
 // AlertDrift are the mutable fields and the name that differ between the live alert and the CR,
 // sorted. They are compared as strings: the API returns threshold as a number and a CR may carry
 // it as either, and 1 != "1" would be a drift corrected on every pass, forever. The name also
-// seeds the default message, so an empty message compares equal to the live one.
+// seeds the default message, so an empty message compares equal to the live one. The message is
+// compared as pushed, its runbook appended, so a runbook edit is one drift and then none.
 func AlertDrift(live map[string]any, name string, f AlertFields) []string {
 	body := alertBody(name, "", "", "", f)
 	var out []string

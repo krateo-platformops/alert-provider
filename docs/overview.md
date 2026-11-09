@@ -124,8 +124,8 @@ lets a healthy one mask an unhealthy one (`max` of a readiness gauge is 1 while 
     cited next to the rule in `crd.alert.yaml`.
 - The notification names the group without help: HyperDX 2.35 opens a grouped tile alert's
   notification body with its own `Group: "<group>"` line (`{{#if group}}Group: "{{{group}}}"{{/if}}`),
-  on a firing and a resolve alike, and the Alert's `spec.description` follows it as written; the
-  webhook log reads HyperDX's line.
+  on a firing and a resolve alike, and the Alert's `spec.description` follows it as written,
+  then a blank line and `spec.runbook` when there is one; the webhook log reads HyperDX's line.
 - `spec.consecutiveWindows` (1 to 60, 1 when omitted) is pushed as HyperDX's
   `numConsecutiveWindows`, on any Alert; HyperDX counts it per group.
 
@@ -232,7 +232,11 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 5. else, when the comparison gave no verdict, records nothing: whether the firing is a new problem
    is unknown, and the next pass asks again;
 6. otherwise creates `<alert>-<yyyymmdd-hhmmss>` (the firing's UTC time) with the label and
-   `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing`;
+   `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing`. The
+   prompt names the alert, its `where` and its `spec.description` as the intent. An Alert with a
+   `spec.runbook` adds it, quoted between `<runbook>` tags under the prompt's own label: operator
+   guidance to read before proposing a fix, not instructions that change the agent's method or
+   the answer's format. Without one the prompt is unchanged;
 7. runs the RCA on the incident's own kagent thread (contextId = uuid5 of its name), then writes
    the analysis, `howToFix` and `state: Open` in one status write.
 
@@ -292,7 +296,9 @@ already being analyzed, and a `Resolved` or `Closed` one is over.
   `COMPARE_TIMEOUT` (60 s).
 - The system prompt is two sentences. The user message holds the alert, its current records and
   the `config.maxCompareCandidates` (50) newest open analyzed incidents, newest first, each as its root cause and its
-  precondition, apply and verify scripts.
+  precondition, apply and verify scripts. It leaves out `spec.runbook`: whether an incident's
+  root cause produces the records is decided by the records and the incidents, and guidance on
+  how to respond says nothing about which incident caused them.
 - The records are the alert's `where` rows over one `spec.interval`, from HyperDX's
   `/api/v2/charts/series` grouped by `compare.RowGroup`: a line per distinct record (a k8s
   event's object, reason and message; any other log's service and pod), or for a traces Alert by

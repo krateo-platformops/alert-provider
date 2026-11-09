@@ -69,6 +69,32 @@ kubectl apply -f default-alerts.yaml
 kubectl -n krateo-system get alerts
 ```
 
+## Operator guidance
+
+`spec.description` is one plain sentence saying what the Alert catches. What to do when it fires,
+and above all what never to do, goes in `spec.runbook` (markdown, optional). The crash-loop alert
+in [`default-alerts.yaml`](./default-alerts.yaml) carries one:
+
+```yaml
+spec:
+  description: A Krateo platform pod keeps crashing and restarting.
+  runbook: |
+    Read the crashing container's previous logs first:
+    `kubectl -n krateo-system logs <pod> -c <container> --previous`.
+
+    Do not delete the pod or scale its Deployment to zero to stop the restarts: the cause
+    stays, and the logs that show it go with the pod.
+```
+
+- HyperDX's notification text is the description, a blank line, then the runbook (trimmed). The
+  portal shows only the description.
+- The incident-agent RCA reads the runbook as operator guidance, quoted in its own section, before
+  it proposes a fix. The incident comparison does not read it.
+- At most 3072 characters, and description plus runbook at most 4094: HyperDX refuses a
+  notification text over 4096. Admission refuses either. Link to longer procedures.
+- HyperDX renders the text as a Handlebars template and reads a word starting with `@` as a
+  notification channel, so write neither `{{` nor `@name` in it.
+
 For a full fault-injection lab (13 alerts paired with a `breakers.yaml` that injects each fault), see
 [`krateo-agentiko/incident-agent` → `examples/alert-lab/`](https://github.com/krateo-agentiko/incident-agent/tree/main/examples/alert-lab).
 
