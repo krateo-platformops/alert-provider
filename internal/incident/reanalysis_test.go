@@ -22,7 +22,9 @@ func retrying(t *testing.T) (*writerCase, *[]time.Duration) {
 	return c, &slept
 }
 
-func TestAFailedCallIsRetriedThenWritesTheError(t *testing.T) {
+// MUTATION: dropping the retry (breaking out after the first attempt) fails this; so does writing
+// the failed analysis Open.
+func TestAFailedCallIsRetriedThenClosed(t *testing.T) {
 	c, slept := retrying(t)
 	c.rcaErr = errors.New("503 Server Error: Service Unavailable")
 	c.fire(fireOpt{})
@@ -34,8 +36,14 @@ func TestAFailedCallIsRetriedThenWritesTheError(t *testing.T) {
 		uuid.NewSHA1(uuid.NameSpaceDNS, []byte(name+"#retry-1")).String(),
 		uuid.NewSHA1(uuid.NameSpaceDNS, []byte(name+"#retry-2")).String(),
 	})
-	eq(t, "state", st(inc)["state"], "Open")
+	eq(t, "state", st(inc)["state"], "Closed")
+	eq(t, "closed reason", annotation(inc, AnnotationClosedReason), ClosedAnalysisFailed)
 	eq(t, "error", st(inc)["error"], "The analysis failed: 503 Server Error: Service Unavailable")
+	for _, w := range c.kube.statusWrites() {
+		if w["state"] == "Open" {
+			t.Errorf("a status write opened it: %v", w)
+		}
+	}
 }
 
 func TestARetryThatSucceedsWritesTheAnalysis(t *testing.T) {
@@ -64,12 +72,17 @@ func TestAModelErrorAnswerIsRetried(t *testing.T) {
 	eq(t, "rca calls", len(c.rca), 3)
 }
 
-func TestAnAnswerWithoutScriptsIsNotRetried(t *testing.T) {
+// An answer without scripts is not transient: the agent answered. It is not retried in a new
+// thread; it goes back once, in its own thread, with what is wrong with it.
+func TestAnAnswerWithoutScriptsIsNotRetriedButSentBackOnce(t *testing.T) {
 	c, slept := retrying(t)
 	c.answer = "## Root cause\nno structured block here"
 	c.fire(fireOpt{})
-	eq(t, "rca calls", len(c.rca), 1)
+	eq(t, "rca calls", len(c.rca), 2)
 	eq(t, "waits", len(*slept), 0)
+	eq(t, "thread", c.rca[1][1], c.rca[0][1])
+	eq(t, "correction", c.rca[1][0], CorrectionPrompt([]string{"the answer has no ```json block, so it gives no scripts."}))
+	eq(t, "state", st(c.kube.only(ns))["state"], "Closed")
 }
 
 func TestARetryStopsWhenTheContextEnds(t *testing.T) {
@@ -78,7 +91,7 @@ func TestARetryStopsWhenTheContextEnds(t *testing.T) {
 	c.rcaErr = errors.New("read timed out")
 	c.fire(fireOpt{})
 	eq(t, "rca calls", len(c.rca), 1)
-	eq(t, "state", st(c.kube.only(ns))["state"], "Open")
+	eq(t, "state", st(c.kube.only(ns))["state"], "Closed")
 }
 
 const incName = "cd-not-ready-20260925-100000"

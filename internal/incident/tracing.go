@@ -23,6 +23,7 @@ const (
 	attrOpened            = attribute.Key("incident.opened")
 	attrStaleSkipped      = attribute.Key("incident.stale_skipped")
 	attrAttempts          = attribute.Key("incident.analysis.attempts")
+	attrCorrections       = attribute.Key("incident.analysis.corrections")
 	attrReanalysis        = attribute.Key("incident.reanalysis.count")
 	attrCandidates        = attribute.Key("incident.compare.candidates")
 	attrCached            = attribute.Key("incident.compare.cached")

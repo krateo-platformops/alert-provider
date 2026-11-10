@@ -11,7 +11,7 @@ records (HyperDX, grouped) and its config.maxCompareCandidates (50) newest open 
 scripts) that are not stale (none opened or covered a firing within config.incidentCoverWindow, 24h) and names the one that
 causes them; it covers the firing, which only stamps the observability.krateo.io/last-covered-at annotation. A new incident
 names the stale ones it skipped in observability.krateo.io/supersedes-stale. Else an open incident with no analysis
-(Analyzing, or its RCA failed less than config.failedAnalysisHold, 1800 s, ago) gets it; else a Resolved incident within one spec.interval of
+(Analyzing, or its RCA failed less than config.failedAnalysisHold, 1800 s, ago, though a failed analysis is closed) gets it; else a Resolved incident within one spec.interval of
 resolution.at (grace; never after Closed); else, if a comparison gave no verdict (failed, 429,
 no {"match": number|null} object), nothing; else a new <alert>-<yyyymmdd-hhmmss> opens (Analyzing -> RCA
 -> Open, error set when it has no howToFix).

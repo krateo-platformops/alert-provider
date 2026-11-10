@@ -94,12 +94,16 @@ func TestAStartupLineNamesNoSpan(t *testing.T) {
 	logs := tracingtest.CaptureLogs(t)
 	c := newCase(t)
 	c.w.log = logs.Logger
+	c.w.spawn = func(func()) {} // the RCA it starts runs under its own incident.analyze
 	c.kube.put(ns, "inc-left", alertName, seed{state: "Analyzing", created: "2026-09-25T10:00:00Z"})
+	c.kube.writeSpec(ns, "inc-left", map[string]any{"prompt": "p"})
+	c.kube.put(ns, "inc-gone", alertName, seed{state: "Analyzing", created: "2026-09-25T10:00:00Z"})
 
 	_, other := tracing.Start(context.Background(), "unrelated")
 	c.w.RecoverInterrupted(context.Background())
 	other.End()
 
 	rec.One("unrelated")
-	logs.One("interrupted, opened").Unbound(t)
+	logs.One("interrupted, analyzing again").Unbound(t)
+	logs.One("closed as a failed analysis").Unbound(t)
 }
