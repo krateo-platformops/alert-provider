@@ -3,15 +3,11 @@ package alert
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	prv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
-	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
-	"github.com/krateo-platformops/provider-runtime/pkg/resource"
-	"github.com/krateo-platformops/provider-runtime/pkg/resource/fake"
 
 	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
 )
@@ -21,13 +17,7 @@ import (
 // provider-runtime persists.
 func (h *harness) reconcileRuntime(name string) {
 	h.t.Helper()
-	r := reconciler.NewReconciler(&fake.Manager{Client: h.kube, Scheme: h.kube.Scheme()},
-		resource.ManagedKind(v1alpha1.AlertGroupVersionKind),
-		reconciler.WithExternalConnecter(h.conn),
-		reconciler.WithFinalizer(resource.NewAPIFinalizer(h.kube, Finalizer)),
-		reconciler.WithPollInterval(time.Minute),
-	)
-	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
+	if _, err := h.runtime().Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
 		h.t.Fatalf("reconcile: %v", err)
 	}
 }

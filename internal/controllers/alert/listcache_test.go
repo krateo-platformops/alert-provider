@@ -15,8 +15,6 @@ import (
 	prv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
 	"github.com/krateo-platformops/provider-runtime/pkg/ratelimit"
 	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
-	"github.com/krateo-platformops/provider-runtime/pkg/resource"
-	"github.com/krateo-platformops/provider-runtime/pkg/resource/fake"
 
 	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
 	"github.com/krateo-platformops/alert-provider/internal/tracing/tracingtest"
@@ -280,15 +278,15 @@ func TestAWriteDuringAReadDetachesIt(t *testing.T) {
 	eq(t, "alert lists", h.api.Lists("alerts"), 2)
 }
 
-// alert.observe says whether it read the shared list or made the call.
+// provider-runtime's observe span says whether the pass read the shared list or made the call.
 func TestTheObserveSpanSaysWhetherTheListWasShared(t *testing.T) {
 	h, _ := synced(t, 2)
 	rec := tracingtest.Install(t)
 	h.tracedReconcile(ctx, "a00")
 	h.tracedReconcile(ctx, "a01")
-	spans := rec.Named("alert.observe")
+	spans := rec.Named("observe")
 	if len(spans) != 2 {
-		t.Fatalf("%d alert.observe spans", len(spans))
+		t.Fatalf("%d observe spans", len(spans))
 	}
 	eq(t, "first", attr(spans[0], string(attrListCached)), "false")
 	eq(t, "second", attr(spans[1], string(attrListCached)), "true")
@@ -298,14 +296,7 @@ func TestTheObserveSpanSaysWhetherTheListWasShared(t *testing.T) {
 // Reconciler with the rate-limit governor, wired as Setup wires them.
 func (h *harness) reconcileGoverned(g *ratelimit.Governor, name string) (reconcile.Result, error) {
 	h.t.Helper()
-	r := reconciler.NewReconciler(&fake.Manager{Client: h.kube, Scheme: h.kube.Scheme()},
-		resource.ManagedKind(v1alpha1.AlertGroupVersionKind),
-		reconciler.WithExternalConnecter(h.conn),
-		reconciler.WithFinalizer(resource.NewAPIFinalizer(h.kube, Finalizer)),
-		reconciler.WithPollInterval(h.conn.interval),
-		reconciler.WithRateLimitGovernor(g),
-	)
-	return r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	return h.runtime(reconciler.WithRateLimitGovernor(g)).Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
 }
 
 func governor(t *testing.T) *ratelimit.Governor {

@@ -64,9 +64,9 @@ config:
 # OpenTelemetry tracing (internal/tracing). Off by default: with enabled false no OTEL_* variable
 # renders and the binary registers no tracer, so the pod is exactly as before. On, the provider
 # exports spans over OTLP/HTTP to the node-local collector agent at http://$(HOST_IP):4318: one
-# trace per Alert reconcile (alert.reconcile, its alert.observe/create/update/delete actions and the
-# HyperDX calls), incident.fire/compare/analyze/reanalyze with the model and A2A calls, and the
-# webhook's POSTs. Only the Deployment gets these variables: the hyperdx-key-bootstrap Job's pod
+# trace per Alert reconcile (provider-runtime's reconcile, its connect/observe/update/delete children
+# and the HyperDX calls), incident.fire/compare/analyze/reanalyze with the model and A2A calls, and
+# the webhook's POSTs. Only the Deployment gets these variables: the hyperdx-key-bootstrap Job's pod
 # template is immutable within a release, so toggling this must not change it.
 otel:
   enabled: false

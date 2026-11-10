@@ -6,17 +6,26 @@
 //	OTEL_EXPORTER_OTLP_ENDPOINT         the collector's OTLP/HTTP base URL, e.g. http://<node>:4318
 //	OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  the traces URL, used as-is; wins over the base URL
 //	OTEL_SERVICE_NAME                   service.name                  (default krateo-alert-provider)
+//	OTEL_RESOURCE_ATTRIBUTES            resource attributes; win over the ones below (OTel spec)
+//	DEPLOYMENT_NAME                     k8s.deployment.name and service.instance.id (unset: neither)
 //	OTEL_TRACES_SAMPLER(_ARG)           the sampler, read by the SDK itself
 //
 // GATING. Setup is a no-op unless tracing resolves to enabled. When it is off nothing is
-// registered: the global TracerProvider stays the no-op default, Start returns spans with no
-// SpanContext, and WrapTransport returns its argument unchanged, so the off path is the pre-OTel
-// binary.
+// registered: the global TracerProvider stays the no-op default, provider-runtime's stays unset (its
+// reconciler starts no span), Start returns spans with no SpanContext, and WrapTransport returns its
+// argument unchanged, so the off path is the pre-OTel binary.
 //
-// WHAT IS SPANNED. The outbound HTTP calls (HyperDX, the RCA agent over A2A, authn, the comparison
-// model, the bootstrap Job's HyperDX session), the webhook server, and the controllers' actions
-// (alert.*, incident.*). The Kubernetes client is not instrumented: its watches would flood the
-// pipeline with spans nobody reads.
+// ONE PIPELINE. The TracerProvider Setup builds is both the OTel global and provider-runtime's
+// (Register), so the reconciler's spans (reconcile, connect, observe, update, delete; provider-runtime
+// docs/design-tracing.md §4, §11.3) leave through the same redacting exporter, with the same
+// resource, as this module's own.
+//
+// WHAT IS SPANNED. provider-runtime spans every Alert reconcile and the ExternalClient calls in it;
+// the Alert controller adds its attributes to those spans and starts none of its own. This module
+// spans the outbound HTTP calls (HyperDX, the RCA agent over A2A, authn, the comparison model, the
+// bootstrap Job's HyperDX session), the webhook server, and the incident work (incident.*). The
+// Kubernetes client is not instrumented: its watches would flood the pipeline with spans nobody
+// reads.
 //
 // WHAT IS NEVER RECORDED. No header, body, prompt, completion or token is set as an attribute.
 // The exporter strips the query string of every URL attribute (redact.go), and the transport
@@ -31,12 +40,15 @@ import (
 	"github.com/krateo-platformops/plumbing/env"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
+
+	prtracing "github.com/krateo-platformops/provider-runtime/pkg/tracing"
 )
 
 const (
@@ -52,6 +64,10 @@ const (
 	EnvOTLPTracesEndpoint = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 	// EnvServiceName overrides service.name.
 	EnvServiceName = "OTEL_SERVICE_NAME"
+	// EnvDeploymentName is the Deployment's name, which the chart sets to the same literal as the
+	// Deployment's metadata.name: k8s.deployment.name and service.instance.id, as provider-runtime
+	// docs/design-tracing.md §5 sets them for every provider (the audit join's key).
+	EnvDeploymentName = "DEPLOYMENT_NAME"
 
 	// DefaultServiceName is service.name when OTEL_SERVICE_NAME is unset.
 	DefaultServiceName = "krateo-alert-provider"
@@ -71,9 +87,9 @@ func Enabled() bool {
 	return env.Bool(EnvTracingEnabled, env.Bool(EnvEnabled, false))
 }
 
-// Setup registers the OTLP/HTTP trace pipeline as the global TracerProvider, with the W3C
-// TraceContext and Baggage propagators, when tracing is enabled. When it is not, it registers
-// nothing and returns a no-op ShutdownFunc.
+// Setup registers the OTLP/HTTP trace pipeline, with the W3C TraceContext and Baggage
+// propagators, when tracing is enabled (Register). When it is not, it registers nothing and returns
+// a no-op ShutdownFunc.
 //
 // build is recorded as service.version. No sampler is installed: the SDK reads
 // OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG, which the chart sets.
@@ -90,17 +106,40 @@ func Setup(ctx context.Context, build string) (ShutdownFunc, error) {
 	if err != nil {
 		return noop, err
 	}
-	res, err := resource.New(ctx, resource.WithAttributes(
+	tp := NewTracerProvider(exp, sdktrace.WithResource(Resource(ctx, build)))
+	Register(tp)
+	return tp.Shutdown, nil
+}
+
+// Resource is the resource of every span: service.name, service.version (build), and, when
+// DEPLOYMENT_NAME is set, k8s.deployment.name and service.instance.id, both the Deployment's name
+// (provider-runtime docs/design-tracing.md §5: not unique per replica, by the platform's contract;
+// the provider runs one active replica). OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME win, as
+// the OTel spec has them.
+func Resource(ctx context.Context, build string) *resource.Resource {
+	attrs := []attribute.KeyValue{
 		semconv.ServiceName(env.String(EnvServiceName, DefaultServiceName)),
 		semconv.ServiceVersion(build),
-	))
+	}
+	if d := env.String(EnvDeploymentName, ""); d != "" {
+		attrs = append(attrs, semconv.K8SDeploymentName(d), semconv.ServiceInstanceID(d))
+	}
+	res, err := resource.New(ctx, resource.WithAttributes(attrs...), resource.WithFromEnv())
 	if err != nil && res == nil { // a partial resource with a merge error is kept
 		res = resource.Default()
 	}
-	tp := NewTracerProvider(exp, sdktrace.WithResource(res))
+	return res
+}
+
+// Register makes tp the trace pipeline of the whole process: the OTel global (this module's spans
+// and its otelhttp transports), with the W3C propagators, and provider-runtime's, so the
+// reconciler's reconcile root and its children go through the same exporter and resource. Without
+// the second, provider-runtime would start no span (its reconciler reads its own provider, never
+// the OTel global).
+func Register(tp *sdktrace.TracerProvider) {
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(Propagator())
-	return tp.Shutdown, nil
+	prtracing.SetTracerProvider(tp)
 }
 
 // Propagator is the composite W3C TraceContext + Baggage propagator Setup installs.
