@@ -638,7 +638,7 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		}
 		ann[AnnotationSupersedesFailed] = strings.Join(names, ",")
 	}
-	// incident.fire's context: incident-provider's first pass on the new Incident is its child.
+	// incident.fire's context: incident-provider's first act on the new Incident is its child.
 	for k, v := range traceContext(ctx) {
 		ann[k] = v
 	}
@@ -679,7 +679,7 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 //
 // With open, a fresh trace context from ctx's span (incident.analyze) is stamped on the Incident
 // first, in a metadata patch of its own (stampTrace): the status write that follows is what makes
-// incident-provider act, so its acting pass is then a child of this analysis.
+// incident-provider act, so the act step of its acting pass is then a child of this analysis.
 func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any, open bool) error {
 	if open {
 		w.stampTrace(ctx, ns, name)
