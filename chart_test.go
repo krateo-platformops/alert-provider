@@ -74,7 +74,7 @@ func render(t *testing.T, args ...string) (*appsv1.Deployment, *batchv1.Job) {
 func otelVars(env []corev1.EnvVar) []string {
 	var out []string
 	for _, e := range env {
-		if strings.HasPrefix(e.Name, "OTEL_") || e.Name == "HOST_IP" || e.Name == "SERVICE_VERSION" {
+		if strings.HasPrefix(e.Name, "OTEL_") || e.Name == "HOST_IP" || e.Name == "SERVICE_VERSION" || e.Name == "DEPLOYMENT_NAME" {
 			out = append(out, e.Name)
 		}
 	}
@@ -113,8 +113,9 @@ func TestTheChartShipsTracingOff(t *testing.T) {
 	}
 }
 
-// Enabled, the Deployment gets the contract, HOST_IP before the endpoint that expands it; the
-// immutable Job's template does not change.
+// Enabled, the Deployment gets the contract, HOST_IP before the endpoint that expands it, and its
+// own name as DEPLOYMENT_NAME; the immutable Job's template does not change.
+// MUTATION: a DEPLOYMENT_NAME other than the Deployment's metadata.name fails this.
 func TestEnabledTheDeploymentGetsTheOTelEnv(t *testing.T) {
 	dep, job := render(t, "--set", "otel.enabled=true", "--set", "otel.tracesSampler=parentbased_traceidratio",
 		"--set", "otel.serviceName=ap", "--set", "image.tag=1.2.3")
@@ -126,7 +127,9 @@ func TestEnabledTheDeploymentGetsTheOTelEnv(t *testing.T) {
 	}
 	want := map[string]string{"OTEL_ENABLED": "true", "OTEL_TRACING_ENABLED": "true",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://$(HOST_IP):4318", "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
-		"OTEL_SERVICE_NAME": "ap", "SERVICE_VERSION": "1.2.3"}
+		"OTEL_SERVICE_NAME": "ap", "SERVICE_VERSION": "1.2.3",
+		// The resource's k8s.deployment.name: the Deployment's own name, whatever it is.
+		"DEPLOYMENT_NAME": dep.Name}
 	for k, v := range want {
 		if e, ok := byName[k]; !ok || e.Value != v {
 			t.Errorf("%s = %q (present %v), want %q", k, e.Value, ok, v)

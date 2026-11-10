@@ -240,6 +240,10 @@ spec:
             # service.version: the release, as the image tag is.
             - name: SERVICE_VERSION
               value: {{ .Values.image.tag | default .Chart.AppVersion | toString | quote }}
+            # k8s.deployment.name and service.instance.id (provider-runtime design-tracing §5): the
+            # same literal as this Deployment's metadata.name. The downward API cannot give it.
+            - name: DEPLOYMENT_NAME
+              value: krateo-alert-provider
             {{- end }}
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }

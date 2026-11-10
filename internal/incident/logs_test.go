@@ -12,7 +12,7 @@ import (
 
 // A firing that opens an incident logs under the span each line runs in: the opening under
 // incident.fire, the analysis under incident.analyze. Neither is the caller's span (here the
-// alert.observe that hands the firing over), though both are in its trace when it is passed on
+// provider-runtime's observe that hands the firing over), though both are in its trace when it is passed on
 // undetached.
 // MUTATION: binding RunAnalysis' lines to the context it is given, before tracing.Start, fails
 // this; so does logging the opening or the analysis on w.log, unbound.
@@ -22,19 +22,19 @@ func TestAFiringsLinesNameTheirOwnSpans(t *testing.T) {
 	c := newCase(t)
 	c.w.log = logs.Logger
 
-	pctx, parent := tracing.Start(context.Background(), "alert.observe")
+	pctx, parent := tracing.Start(context.Background(), "observe")
 	c.w.Fire(pctx, Alert{Namespace: ns, Alert: compare.Alert{Name: alertName, Where: "Body LIKE '%x%'", Threshold: "1"}},
 		c.recordsOf)
 	parent.End()
 
-	obs, fire, an := rec.One("alert.observe"), rec.One("incident.fire"), rec.One("incident.analyze")
+	obs, fire, an := rec.One("observe"), rec.One("incident.fire"), rec.One("incident.analyze")
 	opened, analyzed := logs.One(": opened"), logs.One("analysis written")
 	opened.In(t, fire)
 	analyzed.In(t, an)
 	logs.One(" chars, ").In(t, an) // analysis(), called by RunAnalysis
 	for _, l := range []tracingtest.Line{opened, analyzed} {
 		if l.SpanID == obs.SpanContext.SpanID().String() {
-			t.Errorf("log %q names the caller's alert.observe", l.Msg)
+			t.Errorf("log %q names the caller's observe", l.Msg)
 		}
 	}
 }
@@ -47,16 +47,16 @@ func TestARefusedFiringsLineNamesIncidentFire(t *testing.T) {
 	c := newCase(t)
 	c.w.log = logs.Logger
 
-	pctx, parent := tracing.Start(context.Background(), "alert.observe")
+	pctx, parent := tracing.Start(context.Background(), "observe")
 	c.w.Fire(pctx, Alert{Namespace: "elsewhere", Alert: compare.Alert{Name: alertName, Where: "Body LIKE '%x%'", Threshold: "1"}},
 		c.recordsOf)
 	parent.End()
 
-	obs, fire := rec.One("alert.observe"), rec.One("incident.fire")
+	obs, fire := rec.One("observe"), rec.One("incident.fire")
 	refused := logs.One("no incident and no RCA")
 	refused.In(t, fire)
 	if refused.SpanID == obs.SpanContext.SpanID().String() {
-		t.Errorf("log %q names the caller's alert.observe", refused.Msg)
+		t.Errorf("log %q names the caller's observe", refused.Msg)
 	}
 }
 

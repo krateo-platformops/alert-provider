@@ -18,8 +18,8 @@ func (h *harness) captureLogs() *tracingtest.Logs {
 	return logs
 }
 
-// A line logged inside an action names the action's span, not the reconcile's: the firing skipped
-// in Observe names alert.observe, the push names alert.update.
+// A line logged inside an ExternalClient call names provider-runtime's span around that call, not
+// the reconcile root: the firing skipped in Observe names observe, the push names update.
 // MUTATION: logging the push on e.log, unbound, fails this; so does binding firings.start's lines
 // to the reconcile's context.
 func TestALineInsideAnActionNamesTheActionsSpan(t *testing.T) {
@@ -31,30 +31,30 @@ func TestALineInsideAnActionNamesTheActionsSpan(t *testing.T) {
 	rec := tracingtest.Install(t)
 	h.tracedReconcile(context.Background(), k)
 
-	root, obs, upd := rec.One("alert.reconcile"), rec.One("alert.observe"), rec.One("alert.update")
+	root, obs, upd := rec.One("reconcile"), rec.One("observe"), rec.One("update")
 	skipped, pushed := logs.One("is paused; firing skipped"), logs.One(": pushed ")
 	skipped.In(t, obs)
 	pushed.In(t, upd)
 	for _, l := range []tracingtest.Line{skipped, pushed} {
 		if l.SpanID == root.SpanContext.SpanID().String() {
-			t.Errorf("log %q names alert.reconcile, not its action", l.Msg)
+			t.Errorf("log %q names the reconcile root, not its call's span", l.Msg)
 		}
 	}
 }
 
-// The pass that creates the HyperDX objects logs it under alert.create.
+// The pass that creates the HyperDX objects logs it under provider-runtime's update span.
 // MUTATION: logging create's line on e.log, unbound, fails this.
-func TestTheCreateLineNamesAlertCreate(t *testing.T) {
+func TestTheCreateLineNamesTheUpdateSpan(t *testing.T) {
 	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
 	logs := h.captureLogs()
 	rec := tracingtest.Install(t)
 	h.tracedReconcile(context.Background(), k)
-	logs.One("synced Alert").In(t, rec.One("alert.create"))
+	logs.One("synced Alert").In(t, rec.One("update"))
 }
 
-// The finalizing pass logs it under alert.delete.
+// The finalizing pass logs it under provider-runtime's delete span.
 // MUTATION: logging Delete's line on e.log, unbound, fails this.
-func TestTheDeleteLineNamesAlertDelete(t *testing.T) {
+func TestTheDeleteLineNamesTheDeleteSpan(t *testing.T) {
 	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
 	h.pass(1)
 	if err := h.kube.Delete(ctx, h.get(k)); err != nil {
@@ -63,12 +63,12 @@ func TestTheDeleteLineNamesAlertDelete(t *testing.T) {
 	logs := h.captureLogs()
 	rec := tracingtest.Install(t)
 	h.tracedReconcile(context.Background(), k)
-	logs.One("finalized Alert").In(t, rec.One("alert.delete"))
+	logs.One("finalized Alert").In(t, rec.One("delete"))
 }
 
-// Connect runs under alert.reconcile and no action: a recreated webhook's line names the reconcile.
+// Connect runs under provider-runtime's connect span: a recreated webhook's line names it.
 // MUTATION: logging the reset on w.log, unbound, fails this.
-func TestTheWebhookResetLineNamesTheReconcile(t *testing.T) {
+func TestTheWebhookResetLineNamesTheConnectSpan(t *testing.T) {
 	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
 	h.pass(1)
 	for _, w := range h.api.All("webhooks") {
@@ -77,7 +77,7 @@ func TestTheWebhookResetLineNamesTheReconcile(t *testing.T) {
 	logs := h.captureLogs()
 	rec := tracingtest.Install(t)
 	h.tracedReconcile(context.Background(), k)
-	logs.One("was recreated").In(t, rec.One("alert.reconcile"))
+	logs.One("was recreated").In(t, rec.One("connect"))
 }
 
 // A firing's lines are its own incident.fire's, across the goroutine it runs in: a new trace, not
@@ -97,7 +97,7 @@ func TestAFiringsLinesNameIncidentFireNotTheReconcile(t *testing.T) {
 	h.tracedReconcile(context.Background(), k)
 	wg.Wait()
 
-	root, fire := rec.One("alert.reconcile"), rec.One("incident.fire")
+	root, fire := rec.One("reconcile"), rec.One("incident.fire")
 	line := logs.One("no incident and no RCA")
 	line.In(t, fire)
 	if line.TraceID == root.SpanContext.TraceID().String() {

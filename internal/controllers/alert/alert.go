@@ -32,7 +32,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	prevent "github.com/krateo-platformops/plumbing/kubeutil/event"
 	"github.com/krateo-platformops/plumbing/kubeutil/eventrecorder"
@@ -113,11 +115,7 @@ func Setup(mgr ctrl.Manager, o Options) error {
 		firings:  f,
 		log:      log,
 	}
-	r := reconciler.NewReconciler(mgr,
-		resource.ManagedKind(v1alpha1.AlertGroupVersionKind),
-		reconciler.WithExternalConnecter(c),
-		reconciler.WithFinalizer(resource.NewAPIFinalizer(mgr.GetClient(), Finalizer)),
-		reconciler.WithPollInterval(o.Controller.PollInterval),
+	r := newReconciler(mgr, c, o.Controller.PollInterval,
 		reconciler.WithLogger(log),
 		reconciler.WithRecorder(prevent.NewAPIRecorder(recorder)),
 		// No warning Events: the seeded reconcile-error alert counts CannotObserveExternalResource
@@ -134,7 +132,26 @@ func Setup(mgr ctrl.Manager, o Options) error {
 		Named(name).
 		WithOptions(opts).
 		For(&v1alpha1.Alert{}, builder.WithPredicates(changed)).
-		Complete(ratelimiter.New(name, traced{r}, o.Controller.GlobalRateLimiter))
+		Complete(ratelimiter.New(name, r, o.Controller.GlobalRateLimiter))
+}
+
+// newReconciler is the Alert controller's reconciler: provider-runtime's, over c, with opts after
+// the options every Alert reconciler has. Setup and the tests build it here.
+//
+// It is provider-runtime's Reconciler itself, with no wrapper: provider-runtime opens the reconcile
+// root span and its connect, observe, update and delete children (provider-runtime
+// docs/design-tracing.md §4), and the ExternalClient sets its attributes on them (annotate). A
+// wrapper span would be a second trace of one span, since provider-runtime's root never takes an
+// in-process parent (§11.3, step 3).
+func newReconciler(mgr manager.Manager, c *connector, poll time.Duration, opts ...reconciler.ReconcilerOption) reconcile.Reconciler {
+	return reconciler.NewReconciler(mgr,
+		resource.ManagedKind(v1alpha1.AlertGroupVersionKind),
+		append([]reconciler.ReconcilerOption{
+			reconciler.WithExternalConnecter(c),
+			reconciler.WithFinalizer(resource.NewAPIFinalizer(mgr.GetClient(), Finalizer)),
+			reconciler.WithPollInterval(poll),
+		}, opts...)...,
+	)
 }
 
 // changed lets through what a person changes: the spec, the annotations and the deletion. The
@@ -401,9 +418,10 @@ func (e *external) specDrift(ctx context.Context, a *v1alpha1.Alert, err error) 
 // created by Update.
 //
 // A pass that finds the alert ALERT fires it, here, since it is the one step every pass runs.
-func (e *external) Observe(ctx context.Context, mg resource.Managed) (obs reconciler.ExternalObservation, err error) {
-	ctx, done := action(ctx, "alert.observe", mg)
-	defer func() { done(err) }()
+//
+// Its attributes go on provider-runtime's observe span (annotate).
+func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
+	defer annotate(ctx, mg)
 	return e.observe(ctx, mg)
 }
 
@@ -624,14 +642,14 @@ func (e *external) Create(ctx context.Context, mg resource.Managed) error {
 }
 
 // Update deletes a shared alert, creates the dashboard and alert or pushes the spec onto them. Its
-// span is alert.create on the pass that creates them, alert.update otherwise.
-func (e *external) Update(ctx context.Context, mg resource.Managed) (err error) {
-	name := "alert.update"
+// attributes go on provider-runtime's update span, alert.action saying whether the pass creates
+// them (annotate).
+func (e *external) Update(ctx context.Context, mg resource.Managed) error {
+	act := "update"
 	if e.plan.create && e.plan.invalid == "" {
-		name = "alert.create"
+		act = "create"
 	}
-	ctx, done := action(ctx, name, mg)
-	defer func() { done(err) }()
+	defer annotate(ctx, mg, attrAction.String(act))
 	return e.update(ctx, mg)
 }
 
@@ -717,14 +735,14 @@ func (e *external) push(ctx context.Context, a *v1alpha1.Alert) error {
 }
 
 // Delete removes the HyperDX alert and dashboard, best-effort: a failure still lets the Alert go,
-// so a delete is never wedged on HyperDX.
-func (e *external) Delete(ctx context.Context, mg resource.Managed) (err error) {
+// so a delete is never wedged on HyperDX. Its attributes go on provider-runtime's delete span
+// (annotate).
+func (e *external) Delete(ctx context.Context, mg resource.Managed) error {
 	a, ok := mg.(*v1alpha1.Alert)
 	if !ok {
 		return errNotAlert
 	}
-	ctx, done := action(ctx, "alert.delete", mg)
-	defer func() { done(err) }()
+	defer annotate(ctx, mg)
 	if id := a.Status.HyperdxAlertID; id != "" {
 		_ = e.hdx.DeleteAlert(ctx, id)
 	}
@@ -761,8 +779,9 @@ type firings struct {
 //
 // ctx is the reconcile's, which ends with it: the firing runs under f.ctx, the process's, so the
 // reconcile timeout never cuts an RCA short and a shutdown still stops it. Its incident.fire span
-// is a new trace linked to the alert.observe span (tracing.Detach), not a child of a span that
-// ends minutes before it.
+// is a new trace linked to the span ctx holds, provider-runtime's observe (or update, on the pass
+// that creates the HyperDX alert), through tracing.Detach, not a child of a span that ends minutes
+// before it.
 func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[string]any, state string) {
 	if state != "ALERT" {
 		return
@@ -774,7 +793,7 @@ func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[strin
 	}
 	f.last[a.UID] = time.Now()
 	f.mu.Unlock()
-	// Its lines are the action span's (alert.observe or alert.create): ctx carries it.
+	// Its lines are the span ctx carries: provider-runtime's observe, or update on a creating pass.
 	log := logging.WithContext(f.log, ctx)
 	if a.Paused() {
 		log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", hyperdxName(f.home, a)))

@@ -638,6 +638,10 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		}
 		ann[AnnotationSupersedesFailed] = strings.Join(names, ",")
 	}
+	// incident.fire's context: incident-provider's first pass on the new Incident is its child.
+	for k, v := range traceContext(ctx) {
+		ann[k] = v
+	}
 	if len(ann) > 0 {
 		meta["annotations"] = ann
 	}
@@ -672,7 +676,14 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 // state (a human closed it, or applied a fix, while it was analyzing) the analysis is written
 // without a state, since Closed is final and the controller owns the rest. Without open no state
 // is written at all: the incident is being closed (see giveUp).
+//
+// With open, a fresh trace context from ctx's span (incident.analyze) is stamped on the Incident
+// first, in a metadata patch of its own (stampTrace): the status write that follows is what makes
+// incident-provider act, so its acting pass is then a child of this analysis.
 func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any, open bool) error {
+	if open {
+		w.stampTrace(ctx, ns, name)
+	}
 	for range writeAttempts {
 		incident, err := w.kube.Get(ctx, ns, name)
 		if err != nil {
@@ -802,7 +813,8 @@ func (w *Writer) recoverAnalysis(ctx context.Context, ns string, incident map[st
 //
 // Its span is incident.fire, with incident.stale_skipped the stale open incidents the firing was
 // not compared with (see stale). The Alert controller passes a context detached from its reconcile
-// (tracing.Detach), so the span is a new trace linked to the reconcile's alert.observe.
+// (tracing.Detach), so the span is a new trace linked to provider-runtime's observe of that
+// reconcile. The Incident it creates carries its trace context (see stampTrace).
 func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 	ctx, span := tracing.Start(ctx, spanFire, trace.WithAttributes(alertAttrs(alert.Namespace, alert.Name)...))
 	defer span.End()

@@ -41,30 +41,58 @@ Off by default. With `otel.enabled: false` the chart renders no OTel variable an
 registers no tracer: the pod is what it was before tracing. With `otel.enabled: true` the
 Deployment gets `OTEL_ENABLED`, `OTEL_TRACING_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://$(HOST_IP):4318`
 (the node-local collector agent; `HOST_IP` is the `status.hostIP` fieldRef, declared first so it
-expands), `OTEL_TRACES_SAMPLER`, `OTEL_SERVICE_NAME` and `SERVICE_VERSION` (the image tag, recorded
-as `service.version`). An `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` set on the pod wins over the base
+expands), `OTEL_TRACES_SAMPLER`, `OTEL_SERVICE_NAME`, `SERVICE_VERSION` (the image tag, recorded
+as `service.version`) and `DEPLOYMENT_NAME` (`krateo-alert-provider`, the Deployment's own name,
+recorded as `k8s.deployment.name` and `service.instance.id`, as provider-runtime's design-tracing §5
+has every provider record them; `OTEL_RESOURCE_ATTRIBUTES` wins over both). An `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` set on the pod wins over the base
 URL and is used as-is; the base URL gets `/v1/traces`. The `hyperdx-key-bootstrap` Job gets none of them: its pod template is
 immutable within a release, so the switch must not change it.
+
+One pipeline: the provider hands its TracerProvider (the redacting exporter, its resource) to
+provider-runtime, whose reconciler spans every Alert pass (provider-runtime v1.14.0,
+design-tracing §4 and §11.3). The Alert controller starts no span of its own; it sets its
+attributes on provider-runtime's.
 
 The spans, by trace:
 
 | span | kind | parent | attributes |
 |---|---|---|---|
-| `alert.reconcile` | internal | root, one per Alert pass | `alert.namespace`, `alert.name` |
-| `alert.observe` | internal | `alert.reconcile` | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state` |
-| `alert.create` | internal | `alert.reconcile`, on the pass that creates the HyperDX dashboard and alert | as above |
-| `alert.update` | internal | `alert.reconcile`, on a pass that pushes the spec | as above |
-| `alert.delete` | internal | `alert.reconcile`, on the finalizing pass | as above |
-| `incident.fire` | internal | new root, **linked** to the `alert.observe` that fired it | `alert.namespace`, `alert.name`, `incident.opened`, `incident.name`, `incident.stale_skipped` |
+| `reconcile` | server | root, one per Alert pass (provider-runtime); a child of, or linked to, the Alert's `krateo.io/traceparent` when it has one | `k8s.object.kind` (`Alert`), `k8s.object.name`, `k8s.object.namespace` |
+| `connect` | internal | `reconcile` | none; the webhook and source calls are under it |
+| `observe` | internal | `reconcile` | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state`, `hyperdx.alerts_list.cached`, `hyperdx.throttled` |
+| `update` | internal | `reconcile`, on a pass that creates the HyperDX dashboard and alert or pushes the spec | as `observe`, without the HyperDX flags, plus `alert.action` (`create` or `update`) |
+| `delete` | internal | `reconcile`, on the finalizing pass | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state` |
+| `incident.fire` | internal | new root, **linked** to the `observe` (or creating `update`) that fired it | `alert.namespace`, `alert.name`, `incident.opened`, `incident.name`, `incident.stale_skipped` |
 | `incident.compare` | internal | `incident.fire` | `incident.compare.candidates`, `incident.compare.cached`, `incident.compare.match` |
 | `incident.analyze` | internal | `incident.fire`, or a new root linked to `incident.reanalyze` | `incident.namespace`, `incident.name`, `incident.analysis.attempts` |
 | `incident.reanalyze` | internal | root, one per reanalysis request | `incident.namespace`, `incident.name`, `incident.reanalysis.count` |
 | `<METHOD> /webhook` | server | root, or the caller's `traceparent` | otelhttp's; no span for `GET /healthz` |
-| `HTTP GET`, `HTTP POST`, … | client | the action that made the call | otelhttp's; HyperDX, A2A, authn, the comparison model, the bootstrap session |
+| `HTTP GET`, `HTTP POST`, … | client | the span that made the call | otelhttp's; HyperDX, A2A, authn, the comparison model, the bootstrap session |
+
+provider-runtime never calls the Alert's `Create`: Observe never reports the HyperDX alert missing,
+so the creating pass is an `update` span with `alert.action=create`. provider-runtime marks
+`observe`, `update` and `delete` Error when the call fails, and `reconcile` when the pass does.
 
 The `incident.` span names are a contract: observability's tail sampler keeps whole every trace
 holding a span named `incident.*` and samples the routine Alert loop at about 5%, so a rename must
 be coordinated with observability (pinned by `TestTheIncidentSpanNamesAreTheSamplerContract`).
+
+The Incidents carry the trace on to incident-provider, which reconciles them with provider-runtime
+(design-tracing §6.2, §6.5, §11.3 step 5). Its reconcile is a child of the Incident's
+`krateo.io/traceparent` while the value is new, and its first pass that acts (starts a check Pod)
+marks the value used, so later passes only link to it:
+
+- the create, in `Analyzing`, carries `krateo.io/traceparent` (and `krateo.io/tracestate` when there
+  is one) from `incident.fire`;
+- before the status write that sets `Open` with the `howToFix` scripts, a merge patch of the
+  annotations alone writes a fresh value from the current `incident.analyze` (a missing tracestate
+  is written as null, so a stale one never stays). The status subresource drops metadata, so it
+  cannot carry it, and the patch goes first: incident-provider's pass that sees the scripts and
+  starts the check Pod sees the new value and is a child of the analysis, in the trace the tail
+  sampler keeps whole. A reanalysis does the same from its own `incident.analyze`. A failed patch
+  is logged and the analysis is still written.
+
+With tracing off neither is written.
 
 A firing and a reanalysis outlive the reconcile that starts them (an RCA takes minutes), so they
 run under the process's context, not the reconcile's: the reconcile timeout never cuts them short
@@ -81,10 +109,10 @@ and cache reads make no spans.
 
 A log record written inside traced work carries `trace_id` and `span_id`, the span it ran in
 (provider-runtime v1.13.0's `logging.WithContext`). It names the innermost span open when it was
-written: a line logged during `alert.observe` names `alert.observe`, not `alert.reconcile`, and a
-firing's or an RCA's lines name their own `incident.fire` or `incident.analyze`, in their own
-trace, not the reconcile that started them. provider-runtime's own per-reconcile lines name
-`alert.reconcile`. Lines written outside any span carry neither: startup, the default-Alert
+written: a line logged during `observe` names `observe`, not `reconcile`, a recreated webhook's
+line names `connect`, and a firing's or an RCA's lines name their own `incident.fire` or
+`incident.analyze`, in their own trace, not the reconcile that started them. provider-runtime's own
+per-reconcile lines name `reconcile`. Lines written outside any span carry neither: startup, the default-Alert
 seeding, the sweep of incidents a restart left `Analyzing`, controller-runtime's own lines (logr
 carries no context), and the `hyperdx-key-bootstrap` Job, which prints plain text with tracing
 off. With tracing off no record carries either.

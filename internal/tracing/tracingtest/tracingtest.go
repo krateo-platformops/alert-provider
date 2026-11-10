@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	prtracing "github.com/krateo-platformops/provider-runtime/pkg/tracing"
+
 	"github.com/krateo-platformops/alert-provider/internal/tracing"
 )
 
@@ -22,21 +24,22 @@ type Recorder struct {
 	exp *tracetest.InMemoryExporter
 }
 
-// Install enables tracing for the test (OTEL_TRACING_ENABLED=true) and registers, as the global
-// provider and propagator, exactly what Setup registers, with the OTLP exporter swapped for an
-// in-memory one: tracing.NewTracerProvider (the redacting batcher) and tracing.Propagator. Both
-// are reset when the test ends. The test cannot run in parallel: the provider is global.
+// Install enables tracing for the test (OTEL_TRACING_ENABLED=true) and registers exactly what Setup
+// registers, with the OTLP exporter swapped for an in-memory one: tracing.NewTracerProvider (the
+// redacting batcher) through tracing.Register, so it is the OTel global, with tracing.Propagator,
+// and provider-runtime's, whose reconciler then spans every pass. All are reset when the test ends.
+// The test cannot run in parallel: the providers are global.
 func Install(t testing.TB) *Recorder {
 	t.Helper()
 	t.Setenv(tracing.EnvTracingEnabled, "true")
 	exp := tracetest.NewInMemoryExporter()
 	tp := tracing.NewTracerProvider(exp)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(tracing.Propagator())
+	tracing.Register(tp)
 	t.Cleanup(func() {
 		_ = tp.Shutdown(context.Background())
 		otel.SetTracerProvider(noop.NewTracerProvider())
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+		prtracing.SetTracerProvider(nil)
 	})
 	return &Recorder{t: t, tp: tp, exp: exp}
 }
@@ -80,6 +83,14 @@ func (r *Recorder) ChildrenOf(parent trace.SpanContext) []tracetest.SpanStub {
 		}
 	}
 	return out
+}
+
+// Under fails the test unless child is a direct child of parent, in parent's trace.
+func Under(t testing.TB, child, parent tracetest.SpanStub) {
+	t.Helper()
+	if child.Parent.SpanID() != parent.SpanContext.SpanID() || child.SpanContext.TraceID() != parent.SpanContext.TraceID() {
+		t.Errorf("%s (parent %s) is not a child of %s (%s)", child.Name, child.Parent.SpanID(), parent.Name, parent.SpanContext.SpanID())
+	}
 }
 
 // Names are the spans' names.
