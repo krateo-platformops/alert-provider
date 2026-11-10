@@ -39,6 +39,7 @@ func TestAFailedAnalysisIsClosedNeverLeftOpen(t *testing.T) {
 			eq(t, "state", s["state"], "Closed")
 			eq(t, "closed in spec", spec(inc)["closed"], true)
 			eq(t, "closed reason", annotation(inc, AnnotationClosedReason), ClosedAnalysisFailed)
+			c.closedInOnePatch(t, str(metadata(inc), "name"))
 			if !strings.Contains(pyfmtStr(s["error"]), tc.why) {
 				t.Errorf("error %q, want %q", s["error"], tc.why)
 			}
@@ -66,9 +67,53 @@ func (c *writerCase) later() {
 	c.w.now = func() time.Time { return now }
 }
 
+// closedInOnePatch asserts that name was closed by exactly one object patch, which sets both
+// spec.closed and the closed-reason annotation: incident-provider records resolution.by
+// analysis-failed only for that one patch from one field manager.
+func (c *writerCase) closedInOnePatch(t *testing.T, name string) {
+	t.Helper()
+	closing := 0
+	for _, p := range c.kube.objectPatches(name) {
+		closed := false
+		if s, ok := p["spec"].(map[string]any); ok {
+			closed, _ = s["closed"].(bool)
+		}
+		meta, _ := p["metadata"].(map[string]any)
+		ann, _ := meta["annotations"].(map[string]any)
+		reason := ann[AnnotationClosedReason] == ClosedAnalysisFailed
+		if closed != reason {
+			t.Errorf("%s: a patch sets spec.closed=%v but closed-reason=%v; one patch must set both: %v", name, closed, reason, p)
+		}
+		if closed {
+			closing++
+		}
+	}
+	if closing != 1 {
+		t.Errorf("%s: closed by %d patches, want exactly one", name, closing)
+	}
+}
+
 func pyfmtStr(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// The close is ONE merge patch setting spec.closed and the closed-reason annotation together:
+// incident-provider (from the release carrying its #19) records resolution.by analysis-failed only
+// when one field manager set both in one patch.
+// MUTATION: splitting giveUp's patch into an annotation patch and a spec patch fails this.
+func TestTheFailedAnalysisCloseIsOnePatchSettingBoth(t *testing.T) {
+	c := newCase(t)
+	c.rcaErr = errors.New("503")
+	c.fire(fireOpt{})
+	name := str(metadata(c.kube.only(ns)), "name")
+	patches := c.kube.objectPatches(name)
+	if len(patches) != 1 {
+		t.Fatalf("%d object patches, want the one close: %v", len(patches), patches)
+	}
+	eq(t, "the close", patches[0], map[string]any{
+		"metadata": map[string]any{"annotations": map[string]any{AnnotationClosedReason: ClosedAnalysisFailed}},
+		"spec":     map[string]any{"closed": true}})
 }
 
 // The close is spec.closed: the incident controller's own transition. While that controller
@@ -209,6 +254,7 @@ func TestANewIncidentClosesTheOpenFailedAnalysesItSupersedes(t *testing.T) {
 		eq(t, f+" state", st(x)["state"], "Closed")
 		eq(t, f+" reason", annotation(x, AnnotationClosedReason), ClosedAnalysisFailed)
 		eq(t, f+" by", annotation(x, AnnotationSupersededBy), name)
+		c.closedInOnePatch(t, f)
 	}
 	eq(t, "the sixth", st(c.kube.get(ns, failed[0]))["state"], "Open")
 	eq(t, "analyzed", st(c.kube.get(ns, alertName+"-ok"))["state"], "Open")
@@ -272,6 +318,7 @@ func TestAnAnalysisInterruptedAgainIsClosed(t *testing.T) {
 		inc := c.kube.get(ns, n)
 		eq(t, n, []any{st(inc)["state"], st(inc)["error"], annotation(inc, AnnotationClosedReason)},
 			[]any{"Closed", Interrupted, ClosedAnalysisFailed})
+		c.closedInOnePatch(t, n)
 		if _, ok := st(inc)["completedAt"]; !ok {
 			t.Errorf("%s: no completedAt", n)
 		}

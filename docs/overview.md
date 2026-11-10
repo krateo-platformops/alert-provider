@@ -273,9 +273,10 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
   incident is closed, never left `Open` with nothing to check: one object patch sets
   `spec.closed: true` and the annotation `observability.krateo.io/closed-reason: analysis-failed`,
   then the analysis is written without a state, with `status.error` saying why there are no
-  scripts. The provider never writes `resolution`: incident-provider turns `spec.closed` into
-  `Closed` and maps the closed-reason annotation onto `resolution.by` (see
-  [api](api.md)). A failed analysis
+  scripts. Both fields go in that one patch, which is the contract: the provider never writes
+  `resolution`, and incident-provider turns `spec.closed` into `Closed`. From the release carrying
+  incident-provider#19 it records `resolution.by: analysis-failed` when one patch from one field
+  manager set both; older versions record `resolution.by: user` (see [api](api.md)). A failed analysis
   keeps covering its alert's firings for `config.failedAnalysisHold` (step 3), then the next
   incident supersedes it (step 6). Should the close patch be refused, the analysis is written
   `Open` with the error, and that next incident closes it.
