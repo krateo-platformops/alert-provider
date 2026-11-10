@@ -43,16 +43,17 @@ func alertAttrs(ns, name string) []attribute.KeyValue {
 	return []attribute.KeyValue{attrAlertNamespace.String(ns), attrAlertName.String(name)}
 }
 
-// PROPAGATION ONTO INCIDENTS (provider-runtime docs/design-tracing.md §6.2, §6.5, §11.3 step 5).
+// PROPAGATION ONTO INCIDENTS (provider-runtime docs/design-tracing.md §6.2, §6.5, §11.3 step 5, D8).
 // incident-provider reconciles the Incidents this package writes, with provider-runtime's
-// reconciler: its reconcile root is a child of the Incident's krateo.io/traceparent while that value
-// is new, and the pass that first acts on a value (its Create, Update or Delete) marks it used, so
-// later passes only link to it. The writer stamps a value at two points of an Incident's life:
+// reconciler (v1.14.1 or later): every reconcile root is a trace of its own, linked to the
+// Incident's krateo.io/traceparent, and only the first act step (Create, Update or Delete) of the
+// first pass that acts on a new value is that value's child; the reconciler then marks the value
+// used, so no later act joins it. The writer stamps a value at two points of an Incident's life:
 //
 //   - at create, in Analyzing, from incident.fire (traceContext, in openOrCover): incident-provider's
-//     first pass is a child of the firing;
+//     first act on the new Incident joins the firing's trace, and its passes link to it;
 //   - before the status write that sets Open and the howToFix scripts, a fresh value from the
-//     current incident.analyze (stampTrace, in finish): the pass that starts the check Pod, which
+//     current incident.analyze (stampTrace, in finish): the update that starts the check Pod, which
 //     acts on the scripts, is then a child of the analysis that wrote them. A reanalysis writes its
 //     own the same way, from its incident.analyze.
 //

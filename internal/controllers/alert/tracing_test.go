@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -14,6 +15,7 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
 	"github.com/krateo-platformops/provider-runtime/pkg/resource/fake"
+	prtracing "github.com/krateo-platformops/provider-runtime/pkg/tracing"
 
 	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
 	"github.com/krateo-platformops/alert-provider/internal/incident"
@@ -207,5 +209,128 @@ func TestIncidentFireIsLinkedToTheRuntimesObserve(t *testing.T) {
 	}
 	if fired == nil || fired.Err() != nil {
 		t.Errorf("the firing's context ended with the reconcile: %v", fired)
+	}
+}
+
+// upstream is a krateo.io/traceparent a stamper (the composition-dynamic-controller, on every
+// apply) writes on an Alert: a sampled span of another trace, which no test exports.
+const upstream = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+// stampUpstream writes upstream on the Alert name, as the stamper does.
+func (h *harness) stampUpstream(name string) trace.SpanContext {
+	h.t.Helper()
+	h.edit(name, func(a *v1alpha1.Alert) {
+		ann := a.GetAnnotations()
+		if ann == nil {
+			ann = map[string]string{}
+		}
+		ann["krateo.io/traceparent"] = upstream
+		a.SetAnnotations(ann)
+	})
+	d := prtracing.Decide(map[string]string{"krateo.io/traceparent": upstream}, "", time.Time{}, time.Now(), 10*time.Minute)
+	if d.Mode != prtracing.Parent || !d.Remote.IsValid() {
+		h.t.Fatalf("provider-runtime decides %v on a fresh stamp, want Parent", d.Mode)
+	}
+	return d.Remote
+}
+
+// linksTo reports whether s has a link to sc.
+func linksTo(s tracetest.SpanStub, sc trace.SpanContext) bool {
+	for _, l := range s.Links {
+		if l.SpanContext.TraceID() == sc.TraceID() && l.SpanContext.SpanID() == sc.SpanID() {
+			return true
+		}
+	}
+	return false
+}
+
+// A pass that only observes an Alert stamped with a fresh krateo.io/traceparent is a trace of its
+// own: provider-runtime v1.14.1's reconcile root has no parent and exactly one link, to the stamp,
+// and no span of the pass is in the stamper's trace. (Under v1.14.0, every pass inside the stamp's
+// 10-minute window was its child, so a chart upgrade pulled every Alert's polls into its trace.)
+// MUTATION: a provider-runtime that parents the root on a new value (v1.14.0) fails this.
+func TestAnObserveOnlyPassOnAFreshStampIsANewRootLinkedToIt(t *testing.T) {
+	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
+	h.pass(1) // creates the HyperDX alert, untraced: the next pass has nothing to do
+	remote := h.stampUpstream(k)
+
+	rec := tracingtest.Install(t)
+	h.tracedReconcile(context.Background(), k)
+
+	noAlertSpans(t, rec)
+	root := rec.One("reconcile")
+	for _, act := range []string{"create", "update", "delete"} {
+		if n := len(rec.Named(act)); n != 0 {
+			t.Fatalf("%d %s spans on an observe-only pass", n, act)
+		}
+	}
+	if root.Parent.IsValid() {
+		t.Errorf("reconcile has parent %v; want a new root", root.Parent.SpanID())
+	}
+	if root.SpanContext.TraceID() == remote.TraceID() {
+		t.Error("reconcile is in the stamper's trace")
+	}
+	if len(root.Links) != 1 || !linksTo(root, remote) {
+		t.Errorf("reconcile links %+v, want exactly one, to the stamp %v", root.Links, remote.SpanID())
+	}
+	for _, s := range rec.Spans() {
+		if s.SpanContext.TraceID() != root.SpanContext.TraceID() {
+			t.Errorf("span %q is not in the reconcile's trace", s.Name)
+		}
+	}
+	tracingtest.Under(t, rec.One("observe"), root)
+	if _, ok := h.get(k).GetAnnotations()["krateo.io/traceparent-continued"]; ok {
+		t.Error("an observe-only pass inside the window wrote the marker")
+	}
+}
+
+// The first pass that acts on a fresh stamp joins only its act to the stamper's trace: the update
+// span is the stamp's child, carries the reconcile's k8s.object.* attributes and the Alert's own
+// (alert.action included), links back to the root, which links to it, and the HyperDX calls the
+// update makes are under it. The root itself stays a new root, and the marker records the stamp.
+// MUTATION: a provider-runtime whose act steps are always the root's children fails this; so does
+// annotate writing to a span other than the one in Update's ctx.
+func TestTheFirstActOnAFreshStampJoinsTheStampersTrace(t *testing.T) {
+	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
+	h.pass(1)
+	id := h.status(k).HyperdxAlertID
+	h.api.Set("alerts", id, map[string]any{"threshold": 0})
+	remote := h.stampUpstream(k)
+
+	rec := tracingtest.Install(t)
+	h.tracedReconcile(context.Background(), k)
+
+	noAlertSpans(t, rec)
+	root, upd := rec.One("reconcile"), rec.One("update")
+	if root.Parent.IsValid() || root.SpanContext.TraceID() == remote.TraceID() {
+		t.Errorf("reconcile parent %v trace %v; want a new root", root.Parent.SpanID(), root.SpanContext.TraceID())
+	}
+	if upd.Parent.SpanID() != remote.SpanID() || upd.SpanContext.TraceID() != remote.TraceID() {
+		t.Errorf("update parent %v in trace %v; want the stamp %v", upd.Parent.SpanID(), upd.SpanContext.TraceID(), remote.SpanID())
+	}
+	if len(upd.Links) != 1 || !linksTo(upd, root.SpanContext) {
+		t.Errorf("update links %+v, want one, to reconcile", upd.Links)
+	}
+	if len(root.Links) != 2 || !linksTo(root, remote) || !linksTo(root, upd.SpanContext) {
+		t.Errorf("reconcile links %+v, want the stamp and its update", root.Links)
+	}
+	for key, want := range map[string]string{
+		"k8s.object.kind": "Alert", "k8s.object.name": k, "k8s.object.namespace": ns,
+		"alert.namespace": ns, "alert.name": k, "alert.hyperdx_id": id, "alert.action": "update",
+	} {
+		if got := attr(upd, key); got != want {
+			t.Errorf("update %s = %q, want %q", key, got, want)
+		}
+	}
+	tracingtest.Under(t, rec.One("observe"), root)
+	put := false
+	for _, c := range clientChildren(t, rec, upd) {
+		put = put || attr(c, "http.request.method") == "PUT"
+	}
+	if !put {
+		t.Error("the threshold PUT is not under the joined update")
+	}
+	if got := h.get(k).GetAnnotations()["krateo.io/traceparent-continued"]; got != upstream {
+		t.Errorf("marker %q, want the stamp %q", got, upstream)
 	}
 }

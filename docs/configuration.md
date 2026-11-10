@@ -49,19 +49,19 @@ URL and is used as-is; the base URL gets `/v1/traces`. The `hyperdx-key-bootstra
 immutable within a release, so the switch must not change it.
 
 One pipeline: the provider hands its TracerProvider (the redacting exporter, its resource) to
-provider-runtime, whose reconciler spans every Alert pass (provider-runtime v1.14.0,
-design-tracing §4 and §11.3). The Alert controller starts no span of its own; it sets its
+provider-runtime, whose reconciler spans every Alert pass (provider-runtime v1.14.1,
+design-tracing §4, §11.3 and D8). The Alert controller starts no span of its own; it sets its
 attributes on provider-runtime's.
 
 The spans, by trace:
 
 | span | kind | parent | attributes |
 |---|---|---|---|
-| `reconcile` | server | root, one per Alert pass (provider-runtime); a child of, or linked to, the Alert's `krateo.io/traceparent` when it has one | `k8s.object.kind` (`Alert`), `k8s.object.name`, `k8s.object.namespace` |
+| `reconcile` | server | new root, one per Alert pass (provider-runtime), never a child of the Alert's `krateo.io/traceparent`: **linked** to it when the Alert has one, and to the `update` or `delete` that joined it | `k8s.object.kind` (`Alert`), `k8s.object.name`, `k8s.object.namespace` |
 | `connect` | internal | `reconcile` | none; the webhook and source calls are under it |
 | `observe` | internal | `reconcile` | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state`, `hyperdx.alerts_list.cached`, `hyperdx.throttled` |
-| `update` | internal | `reconcile`, on a pass that creates the HyperDX dashboard and alert or pushes the spec | as `observe`, without the HyperDX flags, plus `alert.action` (`create` or `update`) |
-| `delete` | internal | `reconcile`, on the finalizing pass | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state` |
+| `update` | internal | `reconcile`, on a pass that creates the HyperDX dashboard and alert or pushes the spec; on the first such pass after a new `krateo.io/traceparent`, that value instead (below) | as `observe`, without the HyperDX flags, plus `alert.action` (`create` or `update`) |
+| `delete` | internal | `reconcile`, on the finalizing pass; a new `krateo.io/traceparent`'s value instead, as `update` | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state` |
 | `incident.fire` | internal | new root, **linked** to the `observe` (or creating `update`) that fired it | `alert.namespace`, `alert.name`, `incident.opened`, `incident.name`, `incident.stale_skipped` |
 | `incident.compare` | internal | `incident.fire` | `incident.compare.candidates`, `incident.compare.cached`, `incident.compare.match` |
 | `incident.analyze` | internal | `incident.fire`, or a new root linked to `incident.reanalyze` | `incident.namespace`, `incident.name`, `incident.analysis.attempts` |
@@ -73,23 +73,32 @@ provider-runtime never calls the Alert's `Create`: Observe never reports the Hyp
 so the creating pass is an `update` span with `alert.action=create`. provider-runtime marks
 `observe`, `update` and `delete` Error when the call fails, and `reconcile` when the pass does.
 
+An Alert stamped with `krateo.io/traceparent` (the composition-dynamic-controller stamps what it
+applies) keeps its passes in traces of their own: each `reconcile` links to the stamp and none is
+its child, so an observe-only pass never enters the stamper's trace. Only the first pass that acts
+on a new value joins it, and only its act: that `update` (or `delete`) is the stamp's child, with
+the HyperDX calls under it, carries the `k8s.object.*` attributes as well as the Alert's, and links
+back to its `reconcile`, which links to it. provider-runtime records the value in
+`krateo.io/traceparent-continued` just before that act, or when its 10-minute window closes with
+none, and no later act joins it.
+
 The `incident.` span names are a contract: observability's tail sampler keeps whole every trace
 holding a span named `incident.*` and samples the routine Alert loop at about 5%, so a rename must
 be coordinated with observability (pinned by `TestTheIncidentSpanNamesAreTheSamplerContract`).
 
 The Incidents carry the trace on to incident-provider, which reconciles them with provider-runtime
-(design-tracing §6.2, §6.5, §11.3 step 5). Its reconcile is a child of the Incident's
-`krateo.io/traceparent` while the value is new, and its first pass that acts (starts a check Pod)
-marks the value used, so later passes only link to it:
+(design-tracing §6.2, §6.5, §11.3 step 5, D8). From provider-runtime v1.14.1 its reconciles link to
+the Incident's `krateo.io/traceparent`, and only the act of its first pass that acts on a new value
+(the `update` that persists the status or starts a check Pod) is that value's child:
 
 - the create, in `Analyzing`, carries `krateo.io/traceparent` (and `krateo.io/tracestate` when there
   is one) from `incident.fire`;
 - before the status write that sets `Open` with the `howToFix` scripts, a merge patch of the
   annotations alone writes a fresh value from the current `incident.analyze` (a missing tracestate
   is written as null, so a stale one never stays). The status subresource drops metadata, so it
-  cannot carry it, and the patch goes first: incident-provider's pass that sees the scripts and
-  starts the check Pod sees the new value and is a child of the analysis, in the trace the tail
-  sampler keeps whole. A reanalysis does the same from its own `incident.analyze`. A failed patch
+  cannot carry it, and the patch goes first: incident-provider's pass that sees the scripts sees
+  the new value, and its `update`, which starts the check Pod, is a child of the analysis, in the
+  trace the tail sampler keeps whole. A reanalysis does the same from its own `incident.analyze`. A failed patch
   is logged and the analysis is still written.
 
 With tracing off neither is written.

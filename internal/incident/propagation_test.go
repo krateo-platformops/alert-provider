@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -105,8 +106,8 @@ func TestTheCreatedIncidentCarriesIncidentFiresTraceparent(t *testing.T) {
 }
 
 // Before the status write that sets Open and the scripts, a metadata patch stamps a fresh
-// traceparent from incident.analyze, so incident-provider's pass that starts the check Pod is a
-// child of the analysis, not a link to the create's value it already used.
+// traceparent from incident.analyze, so the update of incident-provider's pass that starts the
+// check Pod is a child of the analysis, not a link to the create's value it already used.
 // MUTATION: dropping stampTrace from finish (inject at create only) fails this; so does stamping
 // after the status write instead of before it.
 func TestBeforeOpenAFreshTraceparentFromIncidentAnalyzeIsPatchedFirst(t *testing.T) {
@@ -133,7 +134,21 @@ func TestBeforeOpenAFreshTraceparentFromIncidentAnalyzeIsPatchedFirst(t *testing
 	d := prtracing.Decide(map[string]string{annTraceparent: want, "krateo.io/traceparent-continued": canonical(fire)},
 		"", time.Time{}, time.Now(), 10*time.Minute)
 	if d.Mode != prtracing.Parent {
-		t.Errorf("provider-runtime decides %v on the stamped Incident, want Parent", d.Mode)
+		t.Fatalf("provider-runtime decides %v on the stamped Incident, want Parent", d.Mode)
+	}
+	// That pass, as provider-runtime v1.14.1's reconciler opens it: its reconcile is a trace of its
+	// own linked to the stamp, and only its first act, the update that starts the check Pod, is
+	// incident.analyze's child (design-tracing D8).
+	tp := prtracing.TracerProvider()
+	obj := prtracing.Object{Kind: "Incident", Name: name, Namespace: ns}
+	rctx, root := prtracing.StartReconcile(context.Background(), tp, obj, d, time.Now())
+	_, act := prtracing.StartActStep(rctx, tp, obj, prtracing.SpanUpdate, d.Remote)
+	act.End()
+	root.End()
+	upd, reconcile := rec.One(prtracing.SpanUpdate), rec.One(prtracing.SpanReconcile)
+	tracingtest.Under(t, upd, analyze)
+	if reconcile.Parent.IsValid() || reconcile.SpanContext.TraceID() == analyze.SpanContext.TraceID() {
+		t.Errorf("incident-provider's reconcile is in incident.analyze's trace (parent %v)", reconcile.Parent.SpanID())
 	}
 }
 

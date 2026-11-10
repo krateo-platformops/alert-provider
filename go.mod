@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/itchyny/gojq v0.12.20
 	github.com/krateo-platformops/plumbing v1.13.0
-	github.com/krateo-platformops/provider-runtime v1.14.0
+	github.com/krateo-platformops/provider-runtime v1.14.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0
