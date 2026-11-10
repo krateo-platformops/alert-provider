@@ -8,9 +8,10 @@
 //   - JQSyntax: every jq program a script passes literally to jq parses (github.com/itchyny/gojq's
 //     parser). Only the parse is checked, not the compile: gojq's builtins differ from jq's, so a
 //     missing function is not proof of a broken filter, while a syntax error ("Invalid escape") is.
-//   - ReadsAlert: a precondition or verify never reads the Alert CR (alerts.observability.krateo.io).
-//     They test the root-cause object; the Alert is the signal, and once it is deleted or edited a
-//     check that reads it answers unknown forever.
+//   - ReadsAlert: a precondition or verify reads the Alert CR (alerts.observability.krateo.io) only
+//     guarded (see guardedReads): with --ignore-not-found, and an exit 0 on the empty result right
+//     after. They test the root-cause object, which is the Alert only for a false positive of its
+//     own query; unguarded, a check that reads a deleted Alert answers unknown (exit 2) forever.
 //   - CoreSuffix: no kind is named with a .core group suffix (nodes.core): kubectl rejects it with
 //     "the server doesn't have a resource type".
 //
@@ -104,16 +105,19 @@ func Script(name, src string) []Problem {
 				quote(prog.Text), err)})
 		}
 	}
+	guarded := guardedReads(f)
 	for _, ref := range kindRefs(f) {
 		if coreSuffix.MatchString(ref.Kind) {
 			plain := ref.Kind[:strings.IndexByte(ref.Kind, '.')]
 			add(Problem{Script: name, Rule: CoreSuffix, Line: ref.Line, Detail: fmt.Sprintf(
 				"%s names a core kind with a .core suffix, which kubectl rejects: write %s.", quote(ref.Kind), quote(plain))})
 		}
-		if checks[name] && ref.Alert {
+		if checks[name] && ref.Alert && (ref.Call == nil || !guarded[ref.Call]) {
 			add(Problem{Script: name, Rule: ReadsAlert, Line: ref.Line, Detail: fmt.Sprintf(
-				"it reads the Alert CR (%s). A %s tests the root-cause object, never the Alert: the Alert is the signal, "+
-					"and once it is deleted or edited the check answers unknown forever.", ref.Kind, name)})
+				"it reads the Alert CR (%s) without the guard. A %s tests the root-cause object, which is the Alert only "+
+					"when the alert's own query is the cause, and then reads it guarded, so a deleted Alert exits 0, never 2: "+
+					"`v=$(kubectl get alerts.observability.krateo.io <name> -n <namespace> ... --ignore-not-found) || exit 2` "+
+					"with `[[ -n $v ]] || exit 0` on the next line.", ref.Kind, name)})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Line < out[j].Line })
@@ -267,11 +271,13 @@ var (
 	alertKind = regexp.MustCompile(`^alerts?(\.v1alpha1)?\.observability\.krateo\.io$`)
 )
 
-// kindRef is a kind a script names, and the line it is on. Alert says it is the Alert CR.
+// kindRef is a kind a script names, and the line it is on. Alert says it is the Alert CR. Call is
+// the kubectl call whose kind argument it is; nil for a --raw path or any other word.
 type kindRef struct {
 	Kind  string
 	Line  int
 	Alert bool
+	Call  *syntax.CallExpr
 }
 
 // kindRefs are the Alert and .core kinds src names: the kind arguments of its kubectl calls (get
@@ -283,32 +289,183 @@ func kindRefs(f *syntax.File) []kindRef {
 	var out []kindRef
 	// kind is true for a kind argument of kubectl, false for any other literal word, where only the
 	// Alert's full name is unambiguous: a name may end in .core, and alerts may be anything.
-	add := func(spec string, line int, kind bool) {
+	add := func(spec string, line int, call *syntax.CallExpr) {
+		kind := call != nil
 		for _, part := range strings.Split(spec, ",") {
 			k, _, _ := strings.Cut(part, "/")
 			alert := alertKind.MatchString(k) || kind && (k == "alert" || k == "alerts")
 			if alert || kind && coreSuffix.MatchString(k) {
-				out = append(out, kindRef{Kind: k, Line: line, Alert: alert})
+				out = append(out, kindRef{Kind: k, Line: line, Alert: alert, Call: call})
 			}
 		}
 	}
+	// kubectl's own arguments are judged as such, not again as plain words. Walk visits a call
+	// before its words.
+	args := map[*syntax.Word]bool{}
 	syntax.Walk(f, func(n syntax.Node) bool {
 		switch n := n.(type) {
 		case *syntax.CallExpr:
 			if command(n) == "kubectl" {
+				for _, a := range n.Args {
+					args[a] = true
+				}
 				for _, r := range kubectlKinds(n.Args[1:]) {
-					add(r.spec, r.line, true)
+					add(r.spec, r.line, n)
 				}
 				out = append(out, kubectlRaw(n.Args[1:])...)
 			}
 		case *syntax.Word:
-			if s, ok := literal(n); ok && !strings.ContainsAny(s, " \t\n") {
-				add(s, int(n.Pos().Line()), false)
+			if s, ok := literal(n); ok && !args[n] && !strings.ContainsAny(s, " \t\n") {
+				add(s, int(n.Pos().Line()), nil)
 			}
 		}
 		return true
 	})
 	return out
+}
+
+// guardedReads are the kubectl calls of f that read the Alert CR guarded, so that a deleted Alert
+// gives exit 0, never 2. The checker recognises exactly this shape, and refuses any other:
+//
+//   - a top-level statement v=$(kubectl get <kind> [<name>] ... --ignore-not-found), optionally
+//     followed by "|| exit <code>": the substitution holds that one kubectl call, no pipe, its verb
+//     is get, its kind argument names one kind (no comma list), and --ignore-not-found is set
+//     (bare or =true);
+//   - and the very next top-level statement exits 0 when v is empty, as one of
+//     [[ -n $v ]] || exit 0, [[ -z $v ]] && exit 0, [ -n "$v" ] || exit 0, [ -z "$v" ] && exit 0,
+//     or if [[ -z $v ]]; then exit 0; fi (with [ ] or test as well, $v quoted or not, ${v} too).
+//
+// A read inside a function, a loop or a condition, through a variable or a pipe, or with anything
+// between the read and the test is not recognised.
+func guardedReads(f *syntax.File) map[*syntax.CallExpr]bool {
+	out := map[*syntax.CallExpr]bool{}
+	for i, s := range f.Stmts {
+		v, call := guardedAssign(s)
+		if call != nil && i+1 < len(f.Stmts) && exitsZeroOnEmpty(f.Stmts[i+1], v) {
+			out[call] = true
+		}
+	}
+	return out
+}
+
+// guardedAssign is v and the kubectl call of a statement v=$(kubectl get ... --ignore-not-found),
+// optionally followed by || exit <code>; "" and nil for any other statement.
+func guardedAssign(s *syntax.Stmt) (string, *syntax.CallExpr) {
+	if s.Negated || s.Background || s.Coprocess || len(s.Redirs) > 0 {
+		return "", nil
+	}
+	cmd := s.Cmd
+	if b, ok := cmd.(*syntax.BinaryCmd); ok {
+		if b.Op != syntax.OrStmt || !isExit(b.Y, "") || b.X.Negated || len(b.X.Redirs) > 0 {
+			return "", nil
+		}
+		cmd = b.X.Cmd
+	}
+	assign, ok := cmd.(*syntax.CallExpr)
+	if !ok || len(assign.Args) != 0 || len(assign.Assigns) != 1 {
+		return "", nil
+	}
+	a := assign.Assigns[0]
+	if a.Append || a.Naked || a.Index != nil || a.Array != nil || a.Value == nil || len(a.Value.Parts) != 1 {
+		return "", nil
+	}
+	sub, ok := a.Value.Parts[0].(*syntax.CmdSubst)
+	if !ok || len(sub.Stmts) != 1 || sub.Stmts[0].Negated || sub.Stmts[0].Background {
+		return "", nil
+	}
+	call, ok := sub.Stmts[0].Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Assigns) != 0 || command(call) != "kubectl" {
+		return "", nil
+	}
+	pos, flags := kubectlArgs(call.Args[1:])
+	if len(pos) < 2 || pos[0].spec != "get" || strings.Contains(pos[1].spec, ",") {
+		return "", nil
+	}
+	ignore := flags["--ignore-not-found"]
+	if len(ignore) == 0 || ignore[len(ignore)-1].spec != "" && ignore[len(ignore)-1].spec != "true" {
+		return "", nil
+	}
+	return a.Name.Value, call
+}
+
+// exitsZeroOnEmpty says the statement s exits 0 when v is empty (see guardedReads).
+func exitsZeroOnEmpty(s *syntax.Stmt, v string) bool {
+	if s.Negated || s.Background || len(s.Redirs) > 0 {
+		return false
+	}
+	switch c := s.Cmd.(type) {
+	case *syntax.BinaryCmd:
+		return c.Op == syntax.OrStmt && emptyTest(c.X, v, false) && isExit(c.Y, "0") ||
+			c.Op == syntax.AndStmt && emptyTest(c.X, v, true) && isExit(c.Y, "0")
+	case *syntax.IfClause:
+		return c.Else == nil && len(c.Cond) == 1 && emptyTest(c.Cond[0], v, true) &&
+			len(c.Then) == 1 && isExit(c.Then[0], "0")
+	}
+	return false
+}
+
+// emptyTest says s is the test -z v (empty) or -n v (not empty), with [[ ]], [ ] or test.
+func emptyTest(s *syntax.Stmt, v string, empty bool) bool {
+	if s.Negated || len(s.Redirs) > 0 {
+		return false
+	}
+	op, flag := syntax.TsNempStr, "-n"
+	if empty {
+		op, flag = syntax.TsEmpStr, "-z"
+	}
+	switch c := s.Cmd.(type) {
+	case *syntax.TestClause:
+		u, ok := c.X.(*syntax.UnaryTest)
+		if !ok || u.Op != op {
+			return false
+		}
+		w, ok := u.X.(*syntax.Word)
+		return ok && isVar(w, v)
+	case *syntax.CallExpr:
+		if len(c.Assigns) != 0 {
+			return false
+		}
+		name := command(c)
+		if name == "[" && len(c.Args) == 4 {
+			last, _ := literal(c.Args[3])
+			if last != "]" {
+				return false
+			}
+		} else if name != "test" || len(c.Args) != 3 {
+			return false
+		}
+		f, _ := literal(c.Args[1])
+		return f == flag && isVar(c.Args[2], v)
+	}
+	return false
+}
+
+// isVar says w is $v, ${v} or either double-quoted, with no operator.
+func isVar(w *syntax.Word, v string) bool {
+	if len(w.Parts) != 1 {
+		return false
+	}
+	part := w.Parts[0]
+	if dq, ok := part.(*syntax.DblQuoted); ok {
+		if dq.Dollar || len(dq.Parts) != 1 {
+			return false
+		}
+		part = dq.Parts[0]
+	}
+	p, ok := part.(*syntax.ParamExp)
+	return ok && p.Param != nil && p.Param.Value == v && p.Flags == nil && !p.Excl && !p.Length && !p.Width &&
+		!p.IsSet && p.NestedParam == nil && p.Index == nil && len(p.Modifiers) == 0 && p.Slice == nil &&
+		p.Repl == nil && p.Names == 0 && p.Exp == nil
+}
+
+// isExit says s is exit <code>; any literal code when code is "".
+func isExit(s *syntax.Stmt, code string) bool {
+	c, ok := s.Cmd.(*syntax.CallExpr)
+	if !ok || s.Negated || len(c.Assigns) != 0 || command(c) != "exit" || len(c.Args) != 2 {
+		return false
+	}
+	got, ok := literal(c.Args[1])
+	return ok && (code == "" || got == code)
 }
 
 // kubectlValueFlags are kubectl's flags that take the next argument as their value, when not
@@ -353,6 +510,8 @@ func kubectlArgs(args []*syntax.Word) ([]spec, map[string][]spec) {
 				if v, ok := literal(args[i]); ok {
 					flags[name] = append(flags[name], spec{v, int(args[i].Pos().Line())})
 				}
+			case !kubectlValueFlags[name]: // a boolean, recorded with no value
+				flags[name] = append(flags[name], spec{"", line})
 			}
 		default:
 			pos = append(pos, spec{s, line})

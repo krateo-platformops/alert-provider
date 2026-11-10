@@ -49,7 +49,9 @@ const (
 	AnnotationSupersedesStale = "observability.krateo.io/supersedes-stale"
 	maxSupersedes             = 5
 	// AnnotationClosedReason, on an incident the writer closed, says why; the close itself is
-	// spec.closed, which the incident controller turns into state Closed. ClosedAnalysisFailed: its
+	// spec.closed, which the incident controller turns into state Closed. The writer never writes
+	// status.resolution: incident-provider maps this annotation onto resolution.by, so its name and
+	// values are a contract with it. ClosedAnalysisFailed: its
 	// RCA gave no scripts that can run, after the retries and the correction (see RunAnalysis), and
 	// status.error says why. Open, it would have nothing to check and nobody would move it on. It
 	// still takes its alert's firings for FailedAnalysisHold (see pick).

@@ -273,8 +273,9 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
   incident is closed, never left `Open` with nothing to check: one object patch sets
   `spec.closed: true` and the annotation `observability.krateo.io/closed-reason: analysis-failed`,
   then the analysis is written without a state, with `status.error` saying why there are no
-  scripts. incident-provider turns `spec.closed` into `Closed`, with `resolution.by: user` (the
-  CRD has no other value for it; the annotation says who closed it and why). A failed analysis
+  scripts. The provider never writes `resolution`: incident-provider turns `spec.closed` into
+  `Closed` and maps the closed-reason annotation onto `resolution.by` (see
+  [api](api.md)). A failed analysis
   keeps covering its alert's firings for `config.failedAnalysisHold` (step 3), then the next
   incident supersedes it (step 6). Should the close patch be refused, the analysis is written
   `Open` with the error, and that next incident closes it.
@@ -298,8 +299,22 @@ checks, each a failure seen on a live cluster:
 |---|---|---|
 | bash syntax | all four | a script bash cannot parse, checked with mvdan.cc/sh's bash parser, in process: the image is distroless, without bash, and nothing the model wrote runs here |
 | jq syntax | all four | a jq program, passed literally to `jq`, that does not parse (github.com/itchyny/gojq's parser), such as `"\-"`: jq exits 3 and the check never answers. Only the parse is checked: gojq's builtins differ from jq's |
-| the Alert CR | precondition, verify | a read of `alerts.observability.krateo.io` (singular, with its version, as `type/name`, in a `--raw` path or assigned to a variable), or `alert`/`alerts` where kubectl takes a kind: the checks test the root-cause object, never the Alert, which once edited or deleted leaves them unknown forever |
+| the Alert CR | precondition, verify | an unguarded read of `alerts.observability.krateo.io` (singular, with its version, as `type/name`, in a `--raw` path or assigned to a variable), or of `alert`/`alerts` where kubectl takes a kind. The checks test the root-cause object, which is the Alert only for a false positive of its own query; unguarded, a read of a deleted Alert answers unknown (exit 2) forever. See the guarded form below |
 | `.core` suffix | all four | a core kind with a group suffix (`nodes.core`, `pods.v1.core`) where kubectl takes a kind: kubectl rejects it |
+
+A guarded Alert read is the one shape the checker accepts, and it refuses any other:
+
+- a top-level statement `v=$(kubectl get <kind> [<name>] ... --ignore-not-found)`, optionally
+  followed by `|| exit <code>`. The substitution holds that one kubectl call, with no pipe; its verb
+  is `get`; its kind argument names one kind, not a comma list; and `--ignore-not-found` is set
+  (bare or `=true`);
+- and the very next top-level statement exits 0 when `v` is empty: `[[ -n $v ]] || exit 0`,
+  `[[ -z $v ]] && exit 0`, the same with `[ ]` or `test`, or `if [[ -z $v ]]; then exit 0; fi`
+  (no `else`), with `$v`, `${v}` or either one double-quoted.
+
+A read inside a function, a loop or a condition, through a variable or a `--raw` path, piped, or
+with any statement between the read and the test, is refused. A deleted Alert then exits 0, and
+incident-provider closes the incident (`AlertGone`).
 
 The extraction is conservative: a word that is not literal in the source (a variable, a command
 substitution) is not guessed at, so only what is certainly wrong is refused. A refused precondition,

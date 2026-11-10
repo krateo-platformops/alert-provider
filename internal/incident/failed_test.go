@@ -52,6 +52,9 @@ func TestAFailedAnalysisIsClosedNeverLeftOpen(t *testing.T) {
 				if w["state"] == "Open" {
 					t.Errorf("a status write opened it: %v", w)
 				}
+				if _, ok := w["resolution"]; ok {
+					t.Errorf("the writer wrote resolution, incident-provider's: %v", w)
+				}
 			}
 		})
 	}
@@ -408,6 +411,28 @@ func TestAScriptStillBrokenAfterTheCorrectionClosesTheIncident(t *testing.T) {
 			eq(t, "root cause kept", s["rootCause"].(map[string]any)["statement"], "chart 1.1.9 is missing")
 		})
 	}
+}
+
+// An alert-query false positive reads the Alert in its checks, guarded: written as given.
+func TestAGuardedAlertReadIsWrittenUntouched(t *testing.T) {
+	c := newCase(t)
+	fp := map[string]any{
+		"precondition": "#!/usr/bin/env bash\n# Holds while a's where does not exclude svc-a.\n" +
+			"w=$(kubectl get alerts.observability.krateo.io a -n krateo-system -o jsonpath='{.spec.where}' --ignore-not-found) || exit 2\n" +
+			"[[ -n $w ]] || exit 0\n[[ $w == *\"'svc-a'\"* ]] || exit 1\nexit 0\n",
+		"apply": "#!/usr/bin/env bash\n# Exclude svc-a.\nset -euo pipefail\n" +
+			"kubectl patch alerts.observability.krateo.io a -n krateo-system --type merge -p '{\"spec\":{\"where\":\"x\"}}'\n",
+		"verify": "#!/usr/bin/env bash\n# Fixed once the where excludes svc-a, or a is gone.\n" +
+			"o=$(kubectl get alerts.observability.krateo.io a -n krateo-system -o json --ignore-not-found) || exit 2\n" +
+			"[[ -n $o ]] || exit 0\njq -e --arg a \"'svc-a'\" '.spec.where // \"\" | contains($a)' <<<\"$o\" >/dev/null\n" +
+			"case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac\n",
+	}
+	c.answer = answer(block(fp))
+	c.fire(fireOpt{})
+	eq(t, "rca calls", len(c.rca), 1)
+	s := st(c.kube.only(ns))
+	eq(t, "state", s["state"], "Open")
+	eq(t, "howToFix", s["howToFix"], fp)
 }
 
 // Valid scripts pass untouched: one RCA call, written as given.

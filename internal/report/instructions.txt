@@ -52,14 +52,17 @@ apply. Nothing else runs automatically.
 - PRECONDITION asks "does the incident still hold?". It first runs right after your analysis and
   MUST exit 1 then: a 0 on that first run flags the incident as not reproduced. Build its test from
   the values you read this run, so it holds against the state you saw.
-- TEST THE ROOT-CAUSE OBJECT, NEVER THE ALERT. Read the one object rootCause names, by kind, name
+- TEST THE ROOT-CAUSE OBJECT, NOT THE ALERT. Read the one object rootCause names, by kind, name
   and namespace, and test the field that is wrong on it. Never re-run the alert's query, count its
   rows or re-evaluate everything it matched: the alert can keep firing for a second reason, and the
-  check must still tell whether THIS cause is gone. Precondition and verify NEVER read the Alert CR
-  (alerts.observability.krateo.io), not even its spec: the Alert is the signal, not the cause, and
-  once it is edited or deleted a check that reads it answers unknown forever. Test current state
-  (spec, status, existence), not logs or Events: those describe the past and expire, and a check
-  built on them reports "gone" when they do.
+  check must still tell whether THIS cause is gone. The Alert CR (alerts.observability.krateo.io)
+  is the signal, not the cause: precondition and verify read it only when it IS the root-cause
+  object (an alert query false-positive, below), and then only GUARDED, so that a deleted Alert
+  exits 0, never 2: read it into a variable with --ignore-not-found, as
+  `v=$(kubectl get alerts.observability.krateo.io <name> -n <namespace> ... --ignore-not-found) || exit 2`,
+  and make the very next line `[[ -n $v ]] || exit 0`. Test current state (spec, status,
+  existence), not logs or Events: those describe the past and expire, and a check built on them
+  reports "gone" when they do.
 - VERIFY asks "did the fix work?": the root cause is gone and what it broke is healthy again. Test
   that outcome, not the literal change apply makes, since a human may fix it another way. It runs
   after the precondition exits 0 or a human marks apply done, and is retried for a settle window of
@@ -127,9 +130,9 @@ apply. Nothing else runs automatically.
   comments: the human then runs the script.
 - Every script starts with `#!/usr/bin/env bash` and a comment line saying what it tests or changes.
 - YOUR SCRIPTS ARE CHECKED BEFORE THEY ARE STORED: each must parse as bash, every jq program in it
-  must parse, a precondition or verify must not read the Alert CR, and no kind may carry a .core
-  suffix. One that breaks a rule is sent back to you once with the problem; if it still breaks one,
-  the incident gets no scripts at all.
+  must parse, a precondition or verify reads the Alert CR only in the guarded form above, and no
+  kind may carry a .core suffix. One that breaks a rule is sent back to you once with the problem;
+  if it still breaks one, the incident gets no scripts at all.
 
 Example: payments-api is OOMKilled at a 128Mi memory limit.
   precondition:
@@ -177,10 +180,47 @@ example's pattern; apply is one write, so it has an applyAction.
 
 ALERT QUERY FALSE-POSITIVES: when the rows an Alert counts are written by the telemetry pipeline
 itself (a component that evaluates, stores or analyzes the alert logs text matching the alert's
-own where), the root cause is the Alert's spec.where, not a workload: never target a Deployment or
-Composition for it. Precondition and verify cannot test it, since they never read an Alert, so give
-NO howToFix. Name the Alert in rootCause, write in the markdown the narrowed where (ClickHouse SQL
-excluding the services those rows name, taken from the rows you read, never from memory), and say
-in missingContext that a person applies it to the Alert.
+own where), the root-cause object is the Alert, not a workload. The fix narrows its spec.where
+(ClickHouse SQL) to exclude the services those rows name. Take the names from the rows you read,
+never from memory, and never target a Deployment or Composition for it: the rule lives in the
+Alert. Precondition and verify read the Alert here, so in the guarded form. With <alert>,
+<namespace>, <svc-a> and <svc-b> filled in:
+  precondition:
+    #!/usr/bin/env bash
+    # Holds while <alert>'s where does not exclude <svc-a> and <svc-b>; a deleted <alert> took it along.
+    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}' --ignore-not-found) || exit 2
+    [[ -n $w ]] || exit 0
+    for s in <svc-a> <svc-b>; do
+      [[ $w == *"'$s'"* ]] || exit 1
+    done
+    exit 0
+  apply:
+    #!/usr/bin/env bash
+    # Exclude <svc-a> and <svc-b>, whose logs echo this alert's own query, from its where.
+    set -euo pipefail
+    x="ServiceName NOT IN ('<svc-a>', '<svc-b>')"
+    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}')
+    case "$w" in *"$x"*) exit 0 ;; esac
+    kubectl patch alerts.observability.krateo.io <alert> -n <namespace> --type merge \
+      -p "$(jq -n --arg w "($w) AND $x" '{spec: {where: $w}}')"
+  verify:
+    #!/usr/bin/env bash
+    # Fixed once the where excludes both services and the reconciler has pushed it (phase Synced),
+    # or once <alert> is gone.
+    o=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o json --ignore-not-found) || exit 2
+    [[ -n $o ]] || exit 0
+    jq -e --arg a "'<svc-a>'" --arg b "'<svc-b>'" \
+      '(.spec.where // "" | contains($a) and contains($b)) and .status.phase == "Synced"' <<<"$o" >/dev/null
+    case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac
+  rollback:
+    #!/usr/bin/env bash
+    # Undo apply: drop the <svc-a> and <svc-b> exclusion from <alert>'s where.
+    set -euo pipefail
+    x="ServiceName NOT IN ('<svc-a>', '<svc-b>')"
+    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}')
+    case "$w" in "("*") AND $x") ;; *) exit 0 ;; esac
+    w=${w%") AND $x"}; w=${w#"("}
+    kubectl patch alerts.observability.krateo.io <alert> -n <namespace> --type merge \
+      -p "$(jq -n --arg w "$w" '{spec: {where: $w}}')"
 
 Output STRICT JSON (double quotes, no comments, no trailing commas).

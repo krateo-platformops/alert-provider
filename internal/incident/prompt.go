@@ -61,8 +61,9 @@ func CorrectionPrompt(problems []string) string {
 		b.WriteString("\n- " + p)
 	}
 	b.WriteString("\n\nAnswer again for the same investigation, ending with exactly ONE fenced ```json block that follows the rules " +
-		"you were given, with these problems fixed. Precondition and verify test the root-cause object, never the Alert CR " +
-		"(alerts.observability.krateo.io). Name core kinds by their plural alone (nodes, pods), never with a .core suffix. " +
+		"you were given, with these problems fixed. Precondition and verify test the root-cause object; they read the Alert CR " +
+		"(alerts.observability.krateo.io) only when it is the root cause, and then guarded: --ignore-not-found into a variable, " +
+		"and `[[ -n $v ]] || exit 0` on the next line. Name core kinds by their plural alone (nodes, pods), never with a .core suffix. " +
 		"Every jq program must parse: pass text with --arg. Read the cluster again only for a value a script needs and you " +
 		"have not read.")
 	return b.String()

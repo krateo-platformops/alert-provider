@@ -213,3 +213,77 @@ func TestJQProgramsAreExtractedConservatively(t *testing.T) {
 		}
 	}
 }
+
+// guardedRead is the guarded form of an Alert read: --ignore-not-found, then exit 0 on empty.
+const guardedRead = `#!/usr/bin/env bash
+# Holds while the Alert's where does not exclude svc-a.
+w=$(kubectl get alerts.observability.krateo.io a -n krateo-system -o jsonpath='{.spec.where}' --ignore-not-found) || exit 2
+[[ -n $w ]] || exit 0
+[[ $w == *"'svc-a'"* ]] || exit 1
+exit 0
+`
+
+// A precondition or verify may read the Alert guarded: a deleted Alert then exits 0, never 2.
+func TestAGuardedAlertReadPasses(t *testing.T) {
+	for name, src := range map[string]string{
+		"[[ -n ]] ||":       guardedRead,
+		"[[ -z ]] &&":       "w=$(kubectl get alerts.observability.krateo.io a -n x -o json --ignore-not-found) || exit 2\n[[ -z \"$w\" ]] && exit 0\nexit 1",
+		"if [[ -z ]]":       "w=$(kubectl get alert.observability.krateo.io a -n x -o json --ignore-not-found=true) || exit 2\nif [[ -z ${w} ]]; then exit 0; fi\nexit 1",
+		"[ -n ] ||":         "o=$(kubectl -n x get alerts.observability.krateo.io/a -o json --ignore-not-found)\n[ -n \"$o\" ] || exit 0\nexit 1",
+		"test -z &&":        "o=$(kubectl get alerts a -n x --ignore-not-found -o json) || exit 2\ntest -z \"$o\" && exit 0\nexit 1",
+		"two guarded reads": guardedRead + "o=$(kubectl get alerts.observability.krateo.io a -n krateo-system -o json --ignore-not-found) || exit 2\n[[ -n $o ]] || exit 0\n",
+	} {
+		for _, script := range []string{"precondition", "verify"} {
+			if ps := Script(script, src); len(ps) != 0 {
+				t.Errorf("%s %s: %v", name, script, ps)
+			}
+		}
+	}
+}
+
+// An Alert read without the full guard is refused: the checker recognises one shape only, and when
+// unsure it refuses.
+// MUTATION: accepting any kubectl read of the Alert (ignoring the guard) fails this.
+func TestAnUnguardedAlertReadIsRefused(t *testing.T) {
+	for name, src := range map[string]string{
+		"no guard at all":          "w=$(kubectl get alerts.observability.krateo.io a -n x -o json) || exit 2\nexit 1",
+		"no --ignore-not-found":    "w=$(kubectl get alerts.observability.krateo.io a -n x -o json) || exit 2\n[[ -n $w ]] || exit 0",
+		"--ignore-not-found=false": "w=$(kubectl get alerts.observability.krateo.io a -n x --ignore-not-found=false) || exit 2\n[[ -n $w ]] || exit 0",
+		"not into a variable":      "kubectl get alerts.observability.krateo.io a -n x --ignore-not-found || exit 2\nexit 1",
+		"piped":                    "w=$(kubectl get alerts.observability.krateo.io a -n x -o json --ignore-not-found | jq .spec) || exit 2\n[[ -n $w ]] || exit 0",
+		"a comma list":             "w=$(kubectl get pods,alerts.observability.krateo.io -n x --ignore-not-found) || exit 2\n[[ -n $w ]] || exit 0",
+		"inside a condition":       "if true; then\nw=$(kubectl get alerts.observability.krateo.io a -n x --ignore-not-found) || exit 2\n[[ -n $w ]] || exit 0\nfi",
+		"describe":                 "w=$(kubectl describe alerts.observability.krateo.io a -n x --ignore-not-found) || exit 2\n[[ -n $w ]] || exit 0",
+		"--raw":                    "w=$(kubectl get --raw /apis/observability.krateo.io/v1alpha1/namespaces/x/alerts/a) || exit 2\n[[ -n $w ]] || exit 0",
+		"through a variable":       "r=alerts.observability.krateo.io\nw=$(kubectl get \"$r\" a -n x --ignore-not-found) || exit 2\n[[ -n $w ]] || exit 0",
+	} {
+		for _, script := range []string{"precondition", "verify"} {
+			if ps := Script(script, src); len(ps) == 0 || ps[0].Rule != ReadsAlert {
+				t.Errorf("%s %s: %v", name, script, ps)
+			}
+		}
+	}
+}
+
+// --ignore-not-found without an exit 0 on the empty result right after is refused: the deleted
+// Alert would still fall through to a verdict or an unknown.
+// MUTATION: accepting a read with --ignore-not-found whatever follows it fails this.
+func TestAHalfGuardedAlertReadIsRefused(t *testing.T) {
+	read := "w=$(kubectl get alerts.observability.krateo.io a -n x -o json --ignore-not-found) || exit 2\n"
+	for name, next := range map[string]string{
+		"nothing":              "exit 1",
+		"exit 2 on empty":      "[[ -n $w ]] || exit 2",
+		"exit 1 on empty":      "[[ -z $w ]] && exit 1",
+		"-z with ||":           "[[ -z $w ]] || exit 0",
+		"-n with &&":           "[[ -n $w ]] && exit 0",
+		"another variable":     "[[ -n $o ]] || exit 0",
+		"something in between": "echo read\n[[ -n $w ]] || exit 0",
+		"an else":              "if [[ -z $w ]]; then exit 0; else exit 1; fi",
+		"a default expansion":  "[[ -n ${w:-x} ]] || exit 0",
+		"negated":              "! [[ -n $w ]] || exit 0",
+	} {
+		if ps := Script("precondition", read+next); len(ps) == 0 || ps[0].Rule != ReadsAlert {
+			t.Errorf("%s: %v", name, ps)
+		}
+	}
+}
