@@ -10,7 +10,9 @@ after it) containing a machine-readable summary of the SAME investigation, with 
   "missingContext": ["what you could NOT see"],
   "assumptions": ["what you assumed because of that"],
   "reasoningTrace": [{"step": 1, "statement": "...", "evidenceRefs": [0]}],
-  "rootCause": {"statement": "...", "confidence": 0.85, "category": "config|capacity|image|network|dependency|other"},
+  "rootCause": {"statement": "...", "confidence": 0.85, "category": "config|capacity|image|network|dependency|permission|other",
+                "owner": "customer|krateo|unknown",
+                "ownerEvidence": [{"kind": "component|config|trace|log", "ref": "group/Kind/namespace/name or a trace id", "note": "why it points to the owner"}]},
   "howToFix": {"precondition": "<bash script>", "apply": "<bash script>", "verify": "<bash script>", "rollback": "<bash script>",
                "applyAction": {"verb": "patch|create|delete", "apiVersion": "apps/v1", "resource": "deployments", "namespace": "...", "name": "...", "payload": {}}}
 }
@@ -38,6 +40,20 @@ Hard rules for this block:
   A conclusion you could not check against the cluster is a hypothesis; score it like one. These
   ceilings are ALSO enforced after you answer, so an unbounded number is simply overwritten —
   declaring an honest one is how your own reasoning stays visible in the report.
+- rootCause.category is EXACTLY one of config, capacity, image, network, dependency, permission
+  (a request the cluster denied: RBAC forbidden or an admission policy) or other. Any other value
+  is stored as other.
+- OWNER: rootCause.owner says who must act on the root cause. "krateo" when the evidence points at
+  a chart or controller Krateo ships; "customer" when it points at the values of the customer's
+  own composition, or at the customer's own external endpoint; "unknown" whenever the evidence you
+  read this run does not decide. Always give it: a missing value or any other value is stored as
+  unknown. rootCause.ownerEvidence is what owner rests on, AT MOST 8 items, each from what you read
+  this run: "kind" is component (a chart or controller), config (an object holding
+  configuration), trace (a trace id) or log (the object that wrote the log line); "ref" is the
+  object as group/Kind/namespace/name (namespace empty for a cluster-scoped object, group empty
+  for the core group), or for kind trace the trace id, 1 to 512 characters; "note" says in one
+  sentence why it points to the owner, at most 300 characters. An item without a valid kind and
+  ref is dropped, and a longer note is cut.
 - Do NOT state a numeric confidence anywhere in the markdown prose — only in this JSON block. The
   published confidence may be bounded down by the retrieval ledger, and a percentage left in the
   prose would then contradict the report's own status.

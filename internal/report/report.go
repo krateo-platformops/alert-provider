@@ -13,6 +13,9 @@
 //     indices are dropped (the step is kept: a step may lose a bad citation);
 //   - steps are renumbered 1..N in the order given (the agent's order is authoritative);
 //   - rootCause.confidence normalizes number-or-string to a "0.00"-style decimal string in [0,1];
+//   - rootCause.category outside its enum becomes "other", and rootCause.owner missing or outside
+//     its enum "unknown"; rootCause.ownerEvidence keeps at most 8 items with a valid kind and a
+//     ref of 1..512 characters, notes cut to 300 (see rootCause);
 //   - howToFix is precondition, apply and verify or nothing, plus an optional rollback and
 //     applyAction (see howToFix);
 //   - confidence is then bounded by the evidence that was actually retrieved (see policy.go).
@@ -35,6 +38,23 @@ import (
 var Instructions string
 
 var sourceTypes = []string{"logs", "events", "metrics", "object"}
+
+// The Incident CRD's rootCause enums and bounds (incident-provider 0.10.0).
+var (
+	categories         = []string{"config", "capacity", "image", "network", "dependency", "permission", categoryOther}
+	owners             = []string{"customer", "krateo", ownerUnknown}
+	ownerEvidenceKinds = []string{"component", "config", "trace", "log"}
+)
+
+const (
+	categoryOther        = "other"
+	ownerUnknown         = "unknown"
+	ownerEvidenceMax     = 8
+	ownerEvidenceRefMax  = 512
+	ownerEvidenceNoteMax = 300
+	// shownMax bounds a model-written value quoted in a log line.
+	shownMax = 64
+)
 
 // StatusKeys are the parsed keys the writer puts under the Incident's status. Parse also returns
 // "evidence" (the retrieval ledger behind the confidence cap), which the Incident does not store:
@@ -293,15 +313,113 @@ func trace(v any, nSources int) []map[string]any {
 	return out
 }
 
-func rootCause(v any) map[string]any {
-	o := obj(v, "statement", "category")
-	if o == nil || o["statement"] == nil {
-		return nil
+// rootCause keeps a root cause that has a statement, with its fields fitted to the Incident CRD
+// (incident-provider 0.10.0 on): a category or owner outside its enum would have the apiserver
+// refuse the whole status write, so each is coerced (category to other, owner to unknown), and
+// ownerEvidence keeps only the items the CRD accepts. The second value says what was coerced,
+// for the log; it quotes the coerced value and nothing else the model wrote.
+func rootCause(v any) (map[string]any, []string) {
+	o := obj(v, "statement")
+	if o == nil {
+		return nil, nil
 	}
-	if c, ok := confidence(v.(map[string]any)["confidence"]); ok {
+	m := v.(map[string]any)
+	if c, ok := confidence(m["confidence"]); ok {
 		o["confidence"] = c
 	}
-	return o
+	var notes []string
+	if c, ok := s(m["category"]); ok {
+		if contains(categories, strings.ToLower(c)) {
+			o["category"] = strings.ToLower(c)
+		} else {
+			o["category"] = categoryOther
+			notes = append(notes, outOfEnum("rootCause.category", m["category"], categories, categoryOther))
+		}
+	}
+	owner, present := m["owner"]
+	if c, ok := s(owner); ok && contains(owners, strings.ToLower(c)) {
+		o["owner"] = strings.ToLower(c)
+	} else {
+		o["owner"] = ownerUnknown
+		if !present || owner == nil {
+			notes = append(notes, "rootCause.owner missing, written as "+ownerUnknown)
+		} else {
+			notes = append(notes, outOfEnum("rootCause.owner", owner, owners, ownerUnknown))
+		}
+	}
+	ev, evNotes := ownerEvidence(m["ownerEvidence"])
+	if len(ev) > 0 {
+		o["ownerEvidence"] = ev
+	}
+	return o, append(notes, evNotes...)
+}
+
+// ownerEvidence is the items of rootCause.ownerEvidence the CRD accepts, at most
+// ownerEvidenceMax: an item without a kind in ownerEvidenceKinds, or whose ref is empty or over
+// ownerEvidenceRefMax characters, is dropped, and a note is cut to ownerEvidenceNoteMax
+// characters. The second value says what was dropped or cut, without quoting refs or notes.
+func ownerEvidence(v any) ([]map[string]any, []string) {
+	if v == nil {
+		return nil, nil
+	}
+	l, ok := v.([]any)
+	if !ok {
+		return nil, []string{"rootCause.ownerEvidence is not a list, dropped"}
+	}
+	var out []map[string]any
+	var notes []string
+	for i, x := range l {
+		if len(out) == ownerEvidenceMax {
+			notes = append(notes, fmt.Sprintf("rootCause.ownerEvidence: %d items after the first %d kept dropped",
+				len(l)-i, ownerEvidenceMax))
+			break
+		}
+		at := fmt.Sprintf("rootCause.ownerEvidence[%d]", i)
+		m, ok := x.(map[string]any)
+		if !ok {
+			notes = append(notes, at+" dropped: not an object")
+			continue
+		}
+		kind, ok := s(m["kind"])
+		if !ok || !contains(ownerEvidenceKinds, strings.ToLower(kind)) {
+			notes = append(notes, fmt.Sprintf("%s dropped: kind %s is not one of %s", at, shown(m["kind"]),
+				strings.Join(ownerEvidenceKinds, ", ")))
+			continue
+		}
+		ref, ok := s(m["ref"])
+		switch {
+		case !ok:
+			notes = append(notes, at+" dropped: no ref")
+			continue
+		case pyfmt.Len(ref) > ownerEvidenceRefMax:
+			notes = append(notes, fmt.Sprintf("%s dropped: ref over %d characters", at, ownerEvidenceRefMax))
+			continue
+		}
+		item := map[string]any{"kind": strings.ToLower(kind), "ref": ref}
+		if note, ok := s(m["note"]); ok {
+			if pyfmt.Len(note) > ownerEvidenceNoteMax {
+				note = pyfmt.Cut(note, ownerEvidenceNoteMax)
+				notes = append(notes, fmt.Sprintf("%s.note cut to %d characters", at, ownerEvidenceNoteMax))
+			}
+			item["note"] = note
+		}
+		out = append(out, item)
+	}
+	return out, notes
+}
+
+// outOfEnum is the log note for a value outside its enum, written as fallback.
+func outOfEnum(field string, v any, enum []string, fallback string) string {
+	return fmt.Sprintf("%s %s is not one of %s, written as %s", field, shown(v), strings.Join(enum, ", "), fallback)
+}
+
+// shown is a value as a log line quotes it: its repr, cut at shownMax characters.
+func shown(v any) string {
+	r := pyfmt.Repr(v)
+	if pyfmt.Len(r) > shownMax {
+		return pyfmt.Cut(r, shownMax) + "…"
+	}
+	return r
 }
 
 // script is the script, or why it is unusable. A list of lines is joined. A script over
@@ -509,13 +627,14 @@ const FixNone = "none returned"
 // A2A stream. When present it overrides what the model says about its own retrieval: a model that
 // never mentions having been denied is the case the evidence policy exists for.
 func Parse(text string, ledger []ToolResult) (string, map[string]any) {
-	prose, v2, _ := ParseFix(text, ledger)
+	prose, v2, _, _ := ParseFix(text, ledger)
 	return prose, v2
 }
 
 // ParseFix is Parse, and why the structured block it used has no howToFix ("apply missing",
-// FixNone, ...): nil when it has one, or when there is no structured block.
-func ParseFix(text string, ledger []ToolResult) (string, map[string]any, []string) {
+// FixNone, ...): nil when it has one, or when there is no structured block. The fourth value says
+// which rootCause values were coerced to fit the Incident CRD, for the writer's log.
+func ParseFix(text string, ledger []ToolResult) (string, map[string]any, []string, []string) {
 	text = pyfmt.Strip(text)
 	for _, c := range candidateBlocks(text) {
 		data := c.data
@@ -536,7 +655,7 @@ func ParseFix(text string, ledger []ToolResult) (string, map[string]any, []strin
 		set("assumptions", as, len(as) > 0)
 		tr := trace(data["reasoningTrace"], len(srcs))
 		set("reasoningTrace", tr, len(tr) > 0)
-		rc := rootCause(data["rootCause"])
+		rc, rcNotes := rootCause(data["rootCause"])
 		set("rootCause", rc, rc != nil)
 		set("howToFix", fix, fix != nil)
 		if len(v2) == 0 {
@@ -559,11 +678,11 @@ func ParseFix(text string, ledger []ToolResult) (string, map[string]any, []strin
 		} else if len(fixNotes) > 0 {
 			v2["missingContext"] = append(head(current, 64-len(fixNotes)), fixNotes...)
 		}
-		return prose, v2, fixProblems
+		return prose, v2, fixProblems, rcNotes
 	}
 	// The fallback stays byte-identical: the writer tells an empty answer by an empty prose and no
 	// fields, and a banner here would make an empty A2A reply look like a result.
-	return text, map[string]any{}, nil
+	return text, map[string]any{}, nil, nil
 }
 
 // eqStr is Python's a == b where both must be strings to be equal.
