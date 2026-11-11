@@ -72,6 +72,21 @@ The parser keeps it only alongside the three scripts. One that is malformed, del
 Node or CustomResourceDefinition, or carries a payload over 16384 characters is left out alone,
 and `missingContext` says so.
 
+`rootCause` is `{statement, confidence, category, owner, ownerEvidence}`, fitted to the Incident CRD
+of incident-provider 0.10.0 before the write, so one value the CRD would refuse never costs the
+whole status write:
+
+| Field | Kept as |
+|---|---|
+| `category` | one of `config`, `capacity`, `image`, `network`, `dependency`, `permission`, `other` (case-insensitive); any other value is written `other` |
+| `owner` | `customer`, `krateo` or `unknown` (case-insensitive); any other value, the empty string included, is written `unknown` (assessed, unusable). Missing or null: `owner` and `ownerEvidence` are both left out, which the CRD reads as not assessed (an incident-agent older than the owner contract) |
+| `ownerEvidence[]` | at most 8 `{kind, ref, note}`: an item whose `kind` is not `component`, `config`, `trace` or `log`, or whose `ref` is empty or over 512 characters, is dropped; a `note` over 300 characters is cut to 300 |
+
+Each coercion is logged at info (`[a2a] <ns>/<name>: rootCause fitted to the Incident CRD: ...`),
+quoting the coerced value cut at 64 characters and nothing else the model wrote. An older Incident
+CRD has no `owner` or `ownerEvidence`; the apiserver prunes them from the write, and the provider
+never reads them back.
+
 The provider writes the `report.StatusKeys` onto the Incident. The parser's `evidence` (the
 retrieval ledger behind the confidence cap) is not stored; its sentence is already in the report
 and `missingContext`.

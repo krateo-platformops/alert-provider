@@ -38,6 +38,9 @@ type fakeKube struct {
 	failPatch error
 	// noController leaves spec.closed unhandled, as while the incident controller is down.
 	noController bool
+	// prune, when set, edits each status patch's body before it lands, as the apiserver prunes
+	// the fields an older CRD's schema does not declare. The recorded call keeps the body sent.
+	prune func(status map[string]any)
 }
 
 type call struct {
@@ -236,6 +239,10 @@ func (f *fakeKube) PatchStatus(_ context.Context, ns, name string, patch map[str
 	if st == nil {
 		st = map[string]any{}
 		obj["status"] = st
+	}
+	if f.prune != nil && body != nil {
+		body = clone(body)
+		f.prune(body)
 	}
 	merge(st, body)
 	f.bump(obj)

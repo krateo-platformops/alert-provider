@@ -954,13 +954,23 @@ const llmError = "LLM error:"
 
 // result is one RCA answer: the status fields it writes; why it failed transiently, "" when it did
 // not; and what a correction turn would fix, nil when it has scripts or a correction cannot help.
-// contextID and ledger are its thread and its tool results.
+// contextID and ledger are its thread and its tool results. coerced says which rootCause values
+// the parser fitted to the Incident CRD (logged, never written).
 type result struct {
 	st        map[string]any
 	transient string
 	correct   []string
 	contextID string
 	ledger    []report.ToolResult
+	coerced   []string
+}
+
+// logCoerced logs, at info, the rootCause values an answer had coerced to fit the Incident CRD.
+func logCoerced(log logging.Logger, ns, name string, r result) {
+	if len(r.coerced) > 0 {
+		log.Info(pyfmt.Cut(fmt.Sprintf("[a2a] %s/%s: rootCause fitted to the Incident CRD: %s", ns, name,
+			strings.Join(r.coerced, "; ")), 2000))
+	}
 }
 
 // analysis is one RCA run. A failed call, an empty answer and an answer that is only kagent's
@@ -974,8 +984,10 @@ func (w *Writer) analysis(ctx context.Context, ns, name, prompt, contextID strin
 		return result{st: map[string]any{"error": "The analysis failed: " + pyfmt.Cut(err.Error(), 500)},
 			transient: "the call failed", contextID: contextID}
 	}
-	logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
+	log := logging.WithContext(w.log, ctx)
+	log.Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
 	r := evaluate(raw, ledger)
+	logCoerced(log, ns, name, r)
 	r.contextID, r.ledger = contextID, ledger
 	return r
 }
@@ -995,6 +1007,7 @@ func (w *Writer) correction(ctx context.Context, ns, name string, first result) 
 		log.Info(fmt.Sprintf("[a2a] %s/%s: correction, %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
 		// The corrected block describes the same investigation: the first turn's reads count too.
 		r := evaluate(raw, append(append([]report.ToolResult{}, first.ledger...), ledger...))
+		logCoerced(log, ns, name, r)
 		if r.st["howToFix"] != nil {
 			r.contextID, r.ledger = first.contextID, append(first.ledger, ledger...)
 			return r
@@ -1013,8 +1026,15 @@ func (w *Writer) correction(ctx context.Context, ns, name string, first result) 
 // correct holds what a correction turn would fix: not for an empty answer or a model error, which
 // are transient, nor for a structured block without any howToFix, which the agent chose.
 func evaluate(raw string, ledger []report.ToolResult) result {
+	prose, v2, fixProblems, coerced := report.ParseFix(raw, ledger)
+	r := parsed(prose, v2, fixProblems)
+	r.coerced = coerced
+	return r
+}
+
+// parsed is evaluate of an answer report.ParseFix has parsed.
+func parsed(prose string, v2 map[string]any, fixProblems []string) result {
 	st := map[string]any{}
-	prose, v2, fixProblems := report.ParseFix(raw, ledger)
 	if pyfmt.Strip(prose) != "" {
 		st["report"] = prose
 	}
