@@ -196,3 +196,35 @@ func TestAReanalysisRecordsItsCause(t *testing.T) {
 		})
 	}
 }
+
+// incident-provider files an ApplyActionStale request only while no consumed request covers the
+// stale episode, judged by status.reanalysis.at. So the status write that records the request
+// (Analyzing, status.reanalysis) lands before spec.reanalysis is removed: removed first, an Open
+// incident with no newer status.reanalysis.at would be filed again.
+func TestAReanalysisRecordsTheRequestBeforeRemovingIt(t *testing.T) {
+	c := newCase(t)
+	c.analyzedIncident("Open")
+	c.kube.writeSpec(ns, incName, map[string]any{"reanalysis": map[string]any{"cause": CauseApplyActionStale}})
+	c.kube.calls = nil
+	if err := c.reanalyze(); err != nil {
+		t.Fatal(err)
+	}
+	recorded, removed := -1, -1
+	for i, call := range c.kube.calls {
+		switch {
+		case call.method == "PATCH" && recorded < 0:
+			if re, _ := call.body["status"].(map[string]any)["reanalysis"].(map[string]any); re["at"] != nil {
+				recorded = i
+			}
+		case call.method == "PATCH-OBJECT" && removed < 0:
+			if sp, ok := call.body["spec"].(map[string]any); ok {
+				if v, ok := sp["reanalysis"]; ok && v == nil {
+					removed = i
+				}
+			}
+		}
+	}
+	if recorded < 0 || removed < 0 || recorded > removed {
+		t.Errorf("status.reanalysis written at call %d, spec.reanalysis removed at call %d", recorded, removed)
+	}
+}

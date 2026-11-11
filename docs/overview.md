@@ -348,7 +348,9 @@ request, and:
 1. clears the analysis, `howToFix`, `lastChecks`, `verifyingSince` and the `Reproduced`
    condition, records the request in `status.reanalysis` (`at`, `feedback`, `count`, `cause`) and sets
    `Analyzing`, in one status write conditioned on the incident's resourceVersion;
-2. removes `spec.reanalysis`;
+2. removes `spec.reanalysis`, only after step 1 landed: incident-provider files an
+   `ApplyActionStale` request only while no consumed request covers the stale episode, judged by
+   `status.reanalysis.at`, so removing the request first could have it filed again;
 3. runs the RCA on a thread of its own (`<name>#reanalysis-<count>`), with the original prompt
    plus the previous root cause or error, each previous script with its last result (and, for an
    unknown result, what the run printed), the previous applyAction, and the feedback; then writes
