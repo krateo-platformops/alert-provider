@@ -344,7 +344,17 @@ wrong. The provider watches Incidents for it, and:
 2. removes `spec.reanalysis`;
 3. runs the RCA on a thread of its own (`<name>#reanalysis-<count>`), with the original prompt
    plus the previous root cause or error, each previous script with its last result (and, for an
-   unknown result, what the run printed), and the feedback; then writes it as in step 7 above.
+   unknown result, what the run printed), the previous applyAction, and the feedback; then writes
+   it as in step 7 above.
+
+After the previous scripts, a previous `howToFix.applyAction` is its own section, titled exactly
+`Previous applyAction:`, with a ```` ```json ```` block of one line: `verb`, `apiVersion`,
+`resource`, `namespace`, `name`, `payload` in that order (those present), each value rendered as
+Python's `json.dumps` (`pyfmt.Dumps`: `", "` and `": "` separators, non-ASCII escaped, nested keys
+sorted). When the incident's `ApplyActionStale` condition (set by incident-provider) has status
+`True`, the next paragraph is `The previous applyAction can no longer be sent: <message>.`, with the
+condition's message verbatim. Without an applyAction neither appears, and the prompt is as before.
+A stale condition does not by itself request a reanalysis.
 
 A request on an incident in any other state is removed unanswered: an `Analyzing` incident is
 already being analyzed, and a `Resolved` or `Closed` one is over.

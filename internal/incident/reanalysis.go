@@ -175,7 +175,53 @@ func ReanalysisPrompt(original string, incident map[string]any, feedback string)
 			b.WriteString("\n\n" + lastRun(c))
 		}
 	}
+	if action, ok := fix["applyAction"].(map[string]any); ok && len(action) > 0 {
+		b.WriteString("\n\nPrevious applyAction:\n\n```json\n" + actionJSON(action) + "\n```")
+		if stale, ok := condition(st, applyActionStale); ok && stale["status"] == "True" {
+			b.WriteString("\n\n" + staleLine(str(stale, "message")))
+		}
+	}
 	return b.String() + report.Instructions
+}
+
+// applyActionStale is the condition incident-provider sets when the cluster no longer serves the
+// apiVersion or resource howToFix.applyAction targets; its message says what it does serve.
+const applyActionStale = "ApplyActionStale"
+
+// actionFields are an applyAction's fields in the order the RCA output contract gives them.
+var actionFields = []string{"verb", "apiVersion", "resource", "namespace", "name", "payload"}
+
+// actionJSON is an applyAction as one line of JSON: its actionFields in that order, each value as
+// pyfmt.Dumps renders it (Python's json.dumps: ", " and ": " separators, non-ASCII escaped, an
+// object's keys sorted). Other keys and null values are left out.
+func actionJSON(action map[string]any) string {
+	var parts []string
+	for _, k := range actionFields {
+		if v, ok := action[k]; ok && v != nil {
+			parts = append(parts, pyfmt.Dumps(k)+": "+pyfmt.Dumps(v))
+		}
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// staleLine is the reanalysis prompt's sentence for a stale applyAction, with the condition's
+// message verbatim.
+func staleLine(message string) string {
+	if message == "" {
+		return "The previous applyAction can no longer be sent."
+	}
+	return "The previous applyAction can no longer be sent: " + message + "."
+}
+
+// condition is the status condition of type t, and whether there is one.
+func condition(st map[string]any, t string) (map[string]any, bool) {
+	list, _ := st["conditions"].([]any)
+	for _, c := range list {
+		if m, ok := c.(map[string]any); ok && m["type"] == t {
+			return m, true
+		}
+	}
+	return nil, false
 }
 
 // lastRun describes a lastChecks entry.
