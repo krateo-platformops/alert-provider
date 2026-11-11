@@ -33,9 +33,9 @@ func TestParseMatchesPython(t *testing.T) {
 }
 
 // fittedToTheCRD is the Python implementation's fields with the one deliberate departure from it:
-// the root cause is fitted to incident-provider 0.10.0's Incident CRD, whose category is an enum
-// and which adds owner (see rootCause). The corpus inputs carry no owner, so every root cause gets
-// unknown. It edits the case in place: each test loads its own corpus.
+// the root cause's category is fitted to incident-provider 0.10.0's Incident CRD, an enum (see
+// rootCause). The corpus inputs carry no owner, so no root cause gets one (not assessed). It edits
+// the case in place: each test loads its own corpus.
 func fittedToTheCRD(v any) any {
 	v2, _ := v.(map[string]any)
 	rc, ok := v2["rootCause"].(map[string]any)
@@ -49,6 +49,5 @@ func fittedToTheCRD(v any) any {
 			rc["category"] = categoryOther
 		}
 	}
-	rc["owner"] = ownerUnknown
 	return v2
 }

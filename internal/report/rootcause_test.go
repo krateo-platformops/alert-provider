@@ -93,12 +93,19 @@ func TestAMissingCategoryStaysMissing(t *testing.T) {
 	wantNotes(t, notes)
 }
 
-func TestAMissingOwnerIsWrittenAsUnknown(t *testing.T) {
+// No owner is "not assessed" (an agent older than the owner contract): the status gets neither
+// owner nor ownerEvidence, and nothing was coerced.
+func TestAMissingOwnerLeavesOwnerAndOwnerEvidenceOut(t *testing.T) {
 	for _, rc := range []map[string]any{{"statement": "x"}, {"statement": "x", "owner": nil}} {
 		got, notes := parseRootCause(t, rc)
-		wantRootCause(t, got, map[string]any{"statement": "x", "owner": "unknown"})
-		wantNotes(t, notes, "rootCause.owner missing, written as unknown")
+		wantRootCause(t, got, map[string]any{"statement": "x"})
+		wantNotes(t, notes)
 	}
+	// Evidence without an owner rests nothing: it is dropped too, and said so.
+	got, notes := parseRootCause(t, map[string]any{"statement": "x",
+		"ownerEvidence": []any{map[string]any{"kind": "component", "ref": "apps/Deployment/a/b"}}})
+	wantRootCause(t, got, map[string]any{"statement": "x"})
+	wantNotes(t, notes, "rootCause.ownerEvidence dropped: no owner")
 }
 
 func TestAnOwnerOutsideTheEnumIsWrittenAsUnknown(t *testing.T) {

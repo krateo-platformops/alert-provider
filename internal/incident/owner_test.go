@@ -80,3 +80,19 @@ func TestAnOlderIncidentCRDPruningTheOwnerIsHarmless(t *testing.T) {
 	eq(t, "compared", c.compared, [][]string{{name}})
 	eq(t, "incidents", c.kube.count(), 1)
 }
+
+// An answer without an owner (an incident-agent older than the owner contract) is "not assessed":
+// the status gets neither owner nor ownerEvidence, and no coercion is logged.
+func TestAnAnswerWithoutAnOwnerWritesNone(t *testing.T) {
+	c := newCase(t)
+	c.fire(fireOpt{})
+	eq(t, "rootCause", st(c.kube.only(ns))["rootCause"], map[string]any{"statement": "chart 1.1.9 is missing",
+		"confidence": "0.8", "category": "config"})
+	c.log.mu.Lock()
+	defer c.log.mu.Unlock()
+	for _, l := range c.log.lines {
+		if strings.Contains(l, "fitted to the Incident CRD") {
+			t.Errorf("coercion logged: %q", l)
+		}
+	}
+}

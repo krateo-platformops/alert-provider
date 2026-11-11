@@ -79,7 +79,7 @@ whole status write:
 | Field | Kept as |
 |---|---|
 | `category` | one of `config`, `capacity`, `image`, `network`, `dependency`, `permission`, `other` (case-insensitive); any other value is written `other` |
-| `owner` | `customer`, `krateo` or `unknown` (case-insensitive); missing or any other value is written `unknown` |
+| `owner` | `customer`, `krateo` or `unknown` (case-insensitive); any other value, the empty string included, is written `unknown` (assessed, unusable). Missing or null: `owner` and `ownerEvidence` are both left out, which the CRD reads as not assessed (an incident-agent older than the owner contract) |
 | `ownerEvidence[]` | at most 8 `{kind, ref, note}`: an item whose `kind` is not `component`, `config`, `trace` or `log`, or whose `ref` is empty or over 512 characters, is dropped; a `note` over 300 characters is cut to 300 |
 
 Each coercion is logged at info (`[a2a] <ns>/<name>: rootCause fitted to the Incident CRD: ...`),

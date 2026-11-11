@@ -13,9 +13,10 @@
 //     indices are dropped (the step is kept: a step may lose a bad citation);
 //   - steps are renumbered 1..N in the order given (the agent's order is authoritative);
 //   - rootCause.confidence normalizes number-or-string to a "0.00"-style decimal string in [0,1];
-//   - rootCause.category outside its enum becomes "other", and rootCause.owner missing or outside
-//     its enum "unknown"; rootCause.ownerEvidence keeps at most 8 items with a valid kind and a
-//     ref of 1..512 characters, notes cut to 300 (see rootCause);
+//   - rootCause.category outside its enum becomes "other", and a rootCause.owner outside its enum
+//     "unknown"; without an owner, owner and ownerEvidence are left out (not assessed);
+//     rootCause.ownerEvidence keeps at most 8 items with a valid kind and a ref of 1..512
+//     characters, notes cut to 300 (see rootCause);
 //   - howToFix is precondition, apply and verify or nothing, plus an optional rollback and
 //     applyAction (see howToFix);
 //   - confidence is then bounded by the evidence that was actually retrieved (see policy.go).
@@ -315,8 +316,9 @@ func trace(v any, nSources int) []map[string]any {
 
 // rootCause keeps a root cause that has a statement, with its fields fitted to the Incident CRD
 // (incident-provider 0.10.0 on): a category or owner outside its enum would have the apiserver
-// refuse the whole status write, so each is coerced (category to other, owner to unknown), and
-// ownerEvidence keeps only the items the CRD accepts. The second value says what was coerced,
+// refuse the whole status write, so each is coerced (category to other, a given owner to
+// unknown), and ownerEvidence keeps only the items the CRD accepts. Without an owner (missing or
+// null) both owner and ownerEvidence are left out: the CRD reads that as "not assessed". The second value says what was coerced,
 // for the log; it quotes the coerced value and nothing else the model wrote.
 func rootCause(v any) (map[string]any, []string) {
 	o := obj(v, "statement")
@@ -336,16 +338,20 @@ func rootCause(v any) (map[string]any, []string) {
 			notes = append(notes, outOfEnum("rootCause.category", m["category"], categories, categoryOther))
 		}
 	}
-	owner, present := m["owner"]
+	// No owner is "not assessed" (an agent older than the owner contract): neither owner nor
+	// ownerEvidence is written. An owner given but unusable is "assessed": unknown.
+	owner := m["owner"]
+	if owner == nil {
+		if m["ownerEvidence"] != nil {
+			notes = append(notes, "rootCause.ownerEvidence dropped: no owner")
+		}
+		return o, notes
+	}
 	if c, ok := s(owner); ok && contains(owners, strings.ToLower(c)) {
 		o["owner"] = strings.ToLower(c)
 	} else {
 		o["owner"] = ownerUnknown
-		if !present || owner == nil {
-			notes = append(notes, "rootCause.owner missing, written as "+ownerUnknown)
-		} else {
-			notes = append(notes, outOfEnum("rootCause.owner", owner, owners, ownerUnknown))
-		}
+		notes = append(notes, outOfEnum("rootCause.owner", owner, owners, ownerUnknown))
 	}
 	ev, evNotes := ownerEvidence(m["ownerEvidence"])
 	if len(ev) > 0 {
