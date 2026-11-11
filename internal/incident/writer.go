@@ -794,7 +794,8 @@ func (w *Writer) recoverAnalysis(ctx context.Context, ns string, incident map[st
 	}
 	if req, ok := status(incident)["reanalysis"].(map[string]any); ok {
 		// The reanalysis cleared the previous analysis; its feedback is what is left of it.
-		prompt = ReanalysisPrompt(prompt, map[string]any{}, str(req, "feedback"))
+		cause, _ := reanalysisCause(req)
+		prompt = ReanalysisPrompt(prompt, map[string]any{}, str(req, "feedback"), cause)
 	}
 	key := fmt.Sprintf("%s#recovery-%d", name, n+1)
 	w.log.Info(fmt.Sprintf("[incident] %s/%s: interrupted, analyzing again (recovery %d of %d)", ns, name, n+1, maxRecoveries))

@@ -334,17 +334,43 @@ new one, past the `Resolved` grace window. A person is the only reader of the ma
 
 ## Reanalysis
 
-A person asks for a new analysis of an `Open` or `Verifying` incident by setting
-`spec.reanalysis` (the portal's Re-run analysis), optionally with `feedback`: what they found
-wrong. The provider watches Incidents for it, and:
+A new analysis of an `Open` or `Verifying` incident is requested by setting `spec.reanalysis`,
+optionally with `feedback`, and with a `cause`:
+
+- `Person` (also when `cause` is absent): the portal's Re-run analysis; `feedback` is what the
+  person found wrong.
+- `ApplyActionStale`: incident-provider files the request itself when the cluster stops serving
+  the version its `howToFix.applyAction` targets. alert-provider has no trigger of its own.
+
+A cause outside those two is taken as `Person`, and logged. The provider watches Incidents for the
+request, and:
 
 1. clears the analysis, `howToFix`, `lastChecks`, `verifyingSince` and the `Reproduced`
-   condition, records the request in `status.reanalysis` (`at`, `feedback`, `count`) and sets
+   condition, records the request in `status.reanalysis` (`at`, `feedback`, `count`, `cause`) and sets
    `Analyzing`, in one status write conditioned on the incident's resourceVersion;
-2. removes `spec.reanalysis`;
+2. removes `spec.reanalysis`, only after step 1 landed: incident-provider files an
+   `ApplyActionStale` request only while no consumed request covers the stale episode, judged by
+   `status.reanalysis.at`, so removing the request first could have it filed again;
 3. runs the RCA on a thread of its own (`<name>#reanalysis-<count>`), with the original prompt
    plus the previous root cause or error, each previous script with its last result (and, for an
-   unknown result, what the run printed), and the feedback; then writes it as in step 7 above.
+   unknown result, what the run printed), the previous applyAction, and the feedback; then writes
+   it as in step 7 above.
+
+After the previous scripts, a previous `howToFix.applyAction` is its own section, titled exactly
+`Previous applyAction:`, with a ```` ```json ```` block of one line: `verb`, `apiVersion`,
+`resource`, `namespace`, `name`, `payload` in that order (those present), each value rendered as
+Python's `json.dumps` (`pyfmt.Dumps`: `", "` and `": "` separators, non-ASCII escaped, nested keys
+sorted). When the incident's `ApplyActionStale` condition (set by incident-provider) has status
+`True`, the next paragraph is `The previous applyAction can no longer be sent: <message>.`, with the
+condition's message verbatim. Without an applyAction neither appears, and the prompt is as before.
+
+The prompt's reanalysis section opens with its cause. For `Person`: "A person asked for a new
+analysis of this incident. The previous one is below; it may be wrong.", and the feedback is
+titled `What the person found wrong with the previous analysis:`. For `ApplyActionStale`: "The
+previous fix can no longer be applied: its applyAction targets a version this cluster no longer
+serves. Re-resolve the fix against the served version. The previous analysis is below.", and the
+feedback is titled `Why the analysis is requested again:`. A reanalysis a restart interrupted
+reruns with the cause recorded in `status.reanalysis`.
 
 A request on an incident in any other state is removed unanswered: an `Analyzing` incident is
 already being analyzed, and a `Resolved` or `Closed` one is over.
