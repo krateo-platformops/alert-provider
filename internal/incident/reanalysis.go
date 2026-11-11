@@ -71,6 +71,11 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 		}
 
 		feedback := str(req, "feedback")
+		cause, known := reanalysisCause(req)
+		if !known {
+			log.Info(fmt.Sprintf("[incident] %s/%s: spec.reanalysis.cause %s is not one of %s, taken as %s",
+				ns, name, pyfmt.Repr(pyfmt.Cut(pyfmt.Str(req["cause"]), 64)), strings.Join(causes, ", "), CausePerson))
+		}
 		prev, _ := status(incident)["reanalysis"].(map[string]any)
 		count := int64(1)
 		if n, ok := prev["count"].(json.Number); ok {
@@ -79,14 +84,15 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 			}
 		}
 		st := map[string]any{"state": "Analyzing",
-			"reanalysis": map[string]any{"at": pyfmt.Isoformat(w.now()), "feedback": nilIfEmpty(feedback), "count": count}}
+			"reanalysis": map[string]any{"at": pyfmt.Isoformat(w.now()), "feedback": nilIfEmpty(feedback), "count": count,
+				"cause": cause}}
 		for _, k := range analysisKeys {
 			st[k] = nil
 		}
 		if conds, ok := withoutCondition(status(incident)["conditions"], reproduced); ok {
 			st["conditions"] = conds
 		}
-		prompt := ReanalysisPrompt(str(spec(incident), "prompt"), incident, feedback)
+		prompt := ReanalysisPrompt(str(spec(incident), "prompt"), incident, feedback, cause)
 		if err := w.patchStatus(ctx, ns, incident, st); err != nil {
 			if code(err) == 409 {
 				continue
@@ -135,21 +141,55 @@ func withoutCondition(conds any, t string) ([]any, bool) {
 	return out, len(out) != len(list)
 }
 
+// A reanalysis request's cause: a person (the portal's Re-run analysis; also when absent), or
+// incident-provider when the cluster stops serving what the applyAction targets.
+const (
+	CausePerson           = "Person"
+	CauseApplyActionStale = "ApplyActionStale"
+)
+
+var causes = []string{CausePerson, CauseApplyActionStale}
+
+// reanalysisCause is a request's cause, Person when it has none; false when it has one outside
+// causes, which is taken as Person.
+func reanalysisCause(req map[string]any) (string, bool) {
+	v, ok := req["cause"]
+	if !ok || v == nil {
+		return CausePerson, true
+	}
+	s, _ := v.(string)
+	for _, c := range causes {
+		if s == c {
+			return c, true
+		}
+	}
+	return CausePerson, false
+}
+
 // scriptOrder is the order a reanalysis prompt lists the previous scripts in.
 var scriptOrder = []string{"precondition", "apply", "verify", "rollback"}
 
 // ReanalysisPrompt is the RCA prompt of a reanalysis: the incident's original prompt with, before
-// its output instructions, the previous analysis, the results its scripts gave, and the feedback.
-func ReanalysisPrompt(original string, incident map[string]any, feedback string) string {
+// its output instructions, why it is analyzed again (cause), the previous analysis, the results
+// its scripts gave, and the feedback.
+func ReanalysisPrompt(original string, incident map[string]any, feedback, cause string) string {
 	base := strings.TrimSuffix(original, report.Instructions)
 	st := status(incident)
 	var b strings.Builder
 	b.WriteString(base)
-	b.WriteString("\n\n## This is a reanalysis\n\nA person asked for a new analysis of this incident. The previous one is below; " +
-		"it may be wrong. Diagnose again from the live cluster rather than restating it, and write scripts that run. " +
+	b.WriteString("\n\n## This is a reanalysis\n\n")
+	feedbackTitle := "What the person found wrong with the previous analysis:"
+	if cause == CauseApplyActionStale {
+		b.WriteString("The previous fix can no longer be applied: its applyAction targets a version this cluster no longer " +
+			"serves. Re-resolve the fix against the served version. The previous analysis is below.")
+		feedbackTitle = "Why the analysis is requested again:"
+	} else {
+		b.WriteString("A person asked for a new analysis of this incident. The previous one is below; it may be wrong.")
+	}
+	b.WriteString(" Diagnose again from the live cluster rather than restating it, and write scripts that run. " +
 		"A script whose last run gave no verdict (an exit other than 0 or 1) is broken: its output says why.")
 	if feedback != "" {
-		b.WriteString("\n\nWhat the person found wrong with the previous analysis:\n\n```text\n" + feedback + "\n```")
+		b.WriteString("\n\n" + feedbackTitle + "\n\n```text\n" + feedback + "\n```")
 	}
 	if rc, _ := st["rootCause"].(map[string]any); str(rc, "statement") != "" {
 		b.WriteString("\n\nPrevious root cause: " + str(rc, "statement"))

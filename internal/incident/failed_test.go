@@ -344,7 +344,20 @@ func TestAnInterruptedReanalysisRerunsWithItsFeedback(t *testing.T) {
 	c.kube.writeStatus(ns, "a-1", map[string]any{"reanalysis": map[string]any{"at": "t", "feedback": "wrong pod", "count": 1}})
 	c.w.RecoverInterrupted(context.Background())
 	eq(t, "rca", len(c.rca), 1)
-	eq(t, "prompt", c.rca[0][0], ReanalysisPrompt(original, map[string]any{}, "wrong pod"))
+	eq(t, "prompt", c.rca[0][0], ReanalysisPrompt(original, map[string]any{}, "wrong pod", CausePerson))
+}
+
+// An interrupted reanalysis that a stale applyAction requested reruns with that cause's intro.
+func TestAnInterruptedStaleReanalysisRerunsWithItsCause(t *testing.T) {
+	c := newCase(t)
+	c.w.spawn = func(f func()) { f() }
+	original := BuildPrompt("CD not ready", "ALERT", "Body LIKE '%x%'", "", "", "")
+	c.interrupted("a-1", "a", seed{state: "Analyzing"}, original)
+	c.kube.writeStatus(ns, "a-1", map[string]any{"reanalysis": map[string]any{"at": "t", "feedback": "stale",
+		"count": 1, "cause": CauseApplyActionStale}})
+	c.w.RecoverInterrupted(context.Background())
+	eq(t, "rca", len(c.rca), 1)
+	eq(t, "prompt", c.rca[0][0], ReanalysisPrompt(original, map[string]any{}, "stale", CauseApplyActionStale))
 }
 
 // A person's incident whose first write never landed gets it: Open, with HumanOnly. No model runs.

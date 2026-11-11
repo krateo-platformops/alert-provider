@@ -76,3 +76,4 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-11-12
 - A reanalysis prompt carries the previous `howToFix.applyAction` after the previous scripts, in a section titled `Previous applyAction:` (a one-line `json` block, fields in the contract's order), and, when the `ApplyActionStale` condition is `True`, the line `The previous applyAction can no longer be sent: <condition message>.` A prompt without an applyAction is unchanged.
+- A reanalysis request carries a `cause`: `Person` (the portal's, also when absent) or `ApplyActionStale` (filed by incident-provider when the cluster stops serving the applyAction's version). The provider records it in `status.reanalysis.cause`, and an `ApplyActionStale` prompt opens with "The previous fix can no longer be applied: ..." instead of "A person asked for a new analysis". The provider files no request itself.

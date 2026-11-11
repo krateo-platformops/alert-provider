@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
@@ -50,7 +51,7 @@ func promptIncident(t *testing.T, action map[string]any, conds ...map[string]any
 }
 
 func reanalysisPrompt(inc map[string]any) string {
-	return ReanalysisPrompt("BASE PROMPT"+report.Instructions, inc, "the patch is refused")
+	return ReanalysisPrompt("BASE PROMPT"+report.Instructions, inc, "the patch is refused", CausePerson)
 }
 
 func wantPrompt(t *testing.T, got, want string) {
@@ -123,4 +124,75 @@ func TestThePreviousApplyActionBlockIsTheApplyAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, "applyAction", v, st(inc)["howToFix"].(map[string]any)["applyAction"])
+}
+
+const staleFeedback = "applyAction targets a version this cluster no longer serves"
+
+// A reanalysis incident-provider requested because the applyAction went stale opens with why, not
+// with a person's request, and keeps the applyAction block and the stale line.
+func TestAStaleApplyActionReanalysisPromptSaysTheFixCanNoLongerBeApplied(t *testing.T) {
+	inc := promptIncident(t, patchAction(),
+		map[string]any{"type": "ApplyActionStale", "status": "True", "reason": "VersionNotServed", "message": staleMessage})
+	got := ReanalysisPrompt("BASE PROMPT"+report.Instructions, inc, staleFeedback, CauseApplyActionStale)
+	want := "BASE PROMPT" +
+		"\n\n## This is a reanalysis\n\nThe previous fix can no longer be applied: its applyAction targets a version this " +
+		"cluster no longer serves. Re-resolve the fix against the served version. The previous analysis is below. " +
+		"Diagnose again from the live cluster rather than restating it, and write scripts that run. " +
+		"A script whose last run gave no verdict (an exit other than 0 or 1) is broken: its output says why." +
+		"\n\nWhy the analysis is requested again:\n\n```text\n" + staleFeedback + "\n```" +
+		"\n\nPrevious root cause: the CRD moved to v1-2-0" +
+		"\n\nThe incident was Open." +
+		"\n\nPrevious precondition script:\n\n```bash\n#!/usr/bin/env bash\n# holds while web is on v1-1-0\nexit 1\n```" +
+		"\n\nIts last run exited 1 (since 2026-11-11T10:00:00Z)." +
+		"\n\nPrevious apply script:\n\n```bash\n#!/usr/bin/env bash\n# move web to v1-2-0\ntrue\n```" +
+		"\n\nPrevious verify script:\n\n```bash\n#!/usr/bin/env bash\n# fixed once web is on v1-2-0\nexit 0\n```" +
+		"\n\nPrevious applyAction:\n\n```json\n" + patchActionJSON + "\n```" +
+		"\n\nThe previous applyAction can no longer be sent: " + staleMessage + "." +
+		report.Instructions
+	wantPrompt(t, got, want)
+	if strings.Contains(got, "A person asked") {
+		t.Error("a stale-applyAction reanalysis says a person asked for it")
+	}
+}
+
+// Reanalyze copies the request's cause into status.reanalysis and opens the prompt with it; a
+// request without one (the portal's) is a person's, and so is one with an unknown cause, logged.
+func TestAReanalysisRecordsItsCause(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		cause      any
+		want       string
+		intro      string
+		logUnknown bool
+	}{
+		{"absent", nil, CausePerson, "A person asked for a new analysis", false},
+		{"person", "Person", CausePerson, "A person asked for a new analysis", false},
+		{"stale", "ApplyActionStale", CauseApplyActionStale, "The previous fix can no longer be applied", false},
+		{"unknown", "Robot", CausePerson, "A person asked for a new analysis", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			wc := newCase(t)
+			wc.analyzedIncident("Open")
+			req := map[string]any{"feedback": staleFeedback}
+			if c.cause != nil {
+				req["cause"] = c.cause
+			}
+			wc.kube.writeSpec(ns, incName, map[string]any{"reanalysis": req})
+			if err := wc.reanalyze(); err != nil {
+				t.Fatal(err)
+			}
+			eq(t, "cause", wc.kube.statusWrites()[0]["reanalysis"].(map[string]any)["cause"], c.want)
+			eq(t, "status cause", st(wc.kube.get(ns, incName))["reanalysis"].(map[string]any)["cause"], c.want)
+			if !strings.Contains(wc.rca[0][0], "## This is a reanalysis\n\n"+c.intro) {
+				t.Errorf("prompt does not open with %q:\n%s", c.intro, wc.rca[0][0])
+			}
+			wc.log.mu.Lock()
+			defer wc.log.mu.Unlock()
+			logged := false
+			for _, l := range wc.log.lines {
+				logged = logged || strings.Contains(l, "spec.reanalysis.cause 'Robot' is not one of Person, ApplyActionStale, taken as Person")
+			}
+			eq(t, "unknown cause logged", logged, c.logUnknown)
+		})
+	}
 }
