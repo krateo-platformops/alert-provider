@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/types"
@@ -44,6 +45,28 @@ func attr(s tracetest.SpanStub, key string) string {
 		}
 	}
 	return ""
+}
+
+// wantActed checks the reconcile root's provider_runtime.acted (provider-runtime v1.15.0,
+// provider-runtime#74): a pass that starts an act step (create, update or delete) carries it as the
+// bool true, and an observe-only pass carries no such attribute at all (it is never set false). The
+// collector's tail sampler keeps the traces that carry it, so the key is pinned as its literal bytes.
+func wantActed(t *testing.T, root tracetest.SpanStub, want bool) {
+	t.Helper()
+	for _, a := range root.Attributes {
+		if string(a.Key) != "provider_runtime.acted" {
+			continue
+		}
+		if !want {
+			t.Errorf("observe-only reconcile carries provider_runtime.acted=%s", a.Value.Emit())
+		} else if a.Value.Type() != attribute.BOOL || !a.Value.AsBool() {
+			t.Errorf("reconcile provider_runtime.acted = %s (%v), want the bool true", a.Value.Emit(), a.Value.Type())
+		}
+		return
+	}
+	if want {
+		t.Errorf("acting reconcile has no provider_runtime.acted; attributes %v", root.Attributes)
+	}
 }
 
 // clientChildren are the Client spans under parent, failing the test when there is none or when a
@@ -93,6 +116,7 @@ func TestAPassIsOneTraceUnderProviderRuntimesReconcile(t *testing.T) {
 	if n := len(rec.Named("create")); n != 0 {
 		t.Errorf("%d create spans on a push pass", n)
 	}
+	wantActed(t, root, true)
 	if root.Parent.IsValid() {
 		t.Error("reconcile has a parent")
 	}
@@ -139,6 +163,7 @@ func TestTheCreatingPassIsAnUpdateSpanMarkedCreate(t *testing.T) {
 	h.tracedReconcile(context.Background(), k)
 	noAlertSpans(t, rec)
 	root := rec.One("reconcile")
+	wantActed(t, root, true)
 	tracingtest.Under(t, rec.One("observe"), root)
 	u := rec.One("update")
 	tracingtest.Under(t, u, root)
@@ -161,8 +186,9 @@ func TestTheFinalizingPassAnnotatesTheDeleteSpan(t *testing.T) {
 	rec := tracingtest.Install(t)
 	h.tracedReconcile(context.Background(), k)
 	noAlertSpans(t, rec)
-	d := rec.One("delete")
-	tracingtest.Under(t, d, rec.One("reconcile"))
+	d, root := rec.One("delete"), rec.One("reconcile")
+	tracingtest.Under(t, d, root)
+	wantActed(t, root, true)
 	if attr(d, "alert.name") != k || attr(d, "alert.namespace") != ns {
 		t.Errorf("delete attributes %v", d.Attributes)
 	}
@@ -244,6 +270,28 @@ func linksTo(s tracetest.SpanStub, sc trace.SpanContext) bool {
 	return false
 }
 
+// A pass that only polls an unchanged Alert starts no act step, so provider-runtime leaves its
+// reconcile root unmarked: the collector's tail sampler may drop it like any other steady-state poll.
+// The acting passes above (update, create-in-update, delete, a joined update) are all marked.
+// MUTATION: a provider-runtime that marks every pass, or v1.14.1 that marks none, fails this or them.
+func TestAnObserveOnlyPassIsNotMarkedActed(t *testing.T) {
+	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
+	h.pass(1) // creates the HyperDX alert, untraced: the next pass has nothing to do
+
+	rec := tracingtest.Install(t)
+	h.tracedReconcile(context.Background(), k)
+
+	noAlertSpans(t, rec)
+	for _, act := range []string{"create", "update", "delete"} {
+		if n := len(rec.Named(act)); n != 0 {
+			t.Fatalf("%d %s spans on an observe-only pass", n, act)
+		}
+	}
+	root := rec.One("reconcile")
+	tracingtest.Under(t, rec.One("observe"), root)
+	wantActed(t, root, false)
+}
+
 // A pass that only observes an Alert stamped with a fresh krateo.io/traceparent is a trace of its
 // own: provider-runtime v1.14.1's reconcile root has no parent and exactly one link, to the stamp,
 // and no span of the pass is in the stamper's trace. (Under v1.14.0, every pass inside the stamp's
@@ -264,6 +312,7 @@ func TestAnObserveOnlyPassOnAFreshStampIsANewRootLinkedToIt(t *testing.T) {
 			t.Fatalf("%d %s spans on an observe-only pass", n, act)
 		}
 	}
+	wantActed(t, root, false)
 	if root.Parent.IsValid() {
 		t.Errorf("reconcile has parent %v; want a new root", root.Parent.SpanID())
 	}
@@ -302,6 +351,7 @@ func TestTheFirstActOnAFreshStampJoinsTheStampersTrace(t *testing.T) {
 
 	noAlertSpans(t, rec)
 	root, upd := rec.One("reconcile"), rec.One("update")
+	wantActed(t, root, true) // the root marks the pass even though its act is in another trace
 	if root.Parent.IsValid() || root.SpanContext.TraceID() == remote.TraceID() {
 		t.Errorf("reconcile parent %v trace %v; want a new root", root.Parent.SpanID(), root.SpanContext.TraceID())
 	}
