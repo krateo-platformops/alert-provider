@@ -49,7 +49,7 @@ URL and is used as-is; the base URL gets `/v1/traces`. The `hyperdx-key-bootstra
 immutable within a release, so the switch must not change it.
 
 One pipeline: the provider hands its TracerProvider (the redacting exporter, its resource) to
-provider-runtime, whose reconciler spans every Alert pass (provider-runtime v1.14.1,
+provider-runtime, whose reconciler spans every Alert pass (provider-runtime v1.15.0,
 design-tracing §4, §11.3 and D8). The Alert controller starts no span of its own; it sets its
 attributes on provider-runtime's.
 
@@ -57,7 +57,7 @@ The spans, by trace:
 
 | span | kind | parent | attributes |
 |---|---|---|---|
-| `reconcile` | server | new root, one per Alert pass (provider-runtime), never a child of the Alert's `krateo.io/traceparent`: **linked** to it when the Alert has one, and to the `update` or `delete` that joined it | `k8s.object.kind` (`Alert`), `k8s.object.name`, `k8s.object.namespace` |
+| `reconcile` | server | new root, one per Alert pass (provider-runtime), never a child of the Alert's `krateo.io/traceparent`: **linked** to it when the Alert has one, and to the `update` or `delete` that joined it | `k8s.object.kind` (`Alert`), `k8s.object.name`, `k8s.object.namespace`; `provider_runtime.acted` (bool `true`) on a pass that starts an `update` or `delete`, absent on an observe-only pass |
 | `connect` | internal | `reconcile` | none; the webhook and source calls are under it |
 | `observe` | internal | `reconcile` | `alert.namespace`, `alert.name`, `alert.hyperdx_id`, `alert.state`, `hyperdx.alerts_list.cached`, `hyperdx.throttled` |
 | `update` | internal | `reconcile`, on a pass that creates the HyperDX dashboard and alert or pushes the spec; on the first such pass after a new `krateo.io/traceparent`, that value instead (below) | as `observe`, without the HyperDX flags, plus `alert.action` (`create` or `update`) |
@@ -85,6 +85,9 @@ none, and no later act joins it.
 The `incident.` span names are a contract: observability's tail sampler keeps whole every trace
 holding a span named `incident.*` and samples the routine Alert loop at about 5%, so a rename must
 be coordinated with observability (pinned by `TestTheIncidentSpanNamesAreTheSamplerContract`).
+From otel-collector-tailsampling 0.1.11 it also keeps every trace whose `reconcile` carries
+`provider_runtime.acted=true`, so every pass that changes HyperDX keeps its reconcile
+(provider-runtime#74; pinned by `wantActed` in the Alert controller's tracing tests).
 
 The Incidents carry the trace on to incident-provider, which reconciles them with provider-runtime
 (design-tracing §6.2, §6.5, §11.3 step 5, D8). From provider-runtime v1.14.1 its reconciles link to
