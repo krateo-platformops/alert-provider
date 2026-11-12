@@ -32,7 +32,7 @@ config:
   # Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the
   # failure. A failed analysis is closed (observability.krateo.io/closed-reason: analysis-failed),
   # never left Open with nothing to check; only an automatic reanalysis (cause ApplyActionStale)
-  # that got no answer goes back to Open with the error instead. Past the hold, a firing nothing else covers opens a new
+  # that fails goes back to Open with the error instead. Past the hold, a firing nothing else covers opens a new
   # incident with a fresh RCA, which names it in observability.krateo.io/supersedes-failed.
   failedAnalysisHold: 1800
   # How many RCAs run at once; more wait, Analyzing, for a free slot. One RCA reads up to ~1M input

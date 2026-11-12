@@ -16,6 +16,11 @@ var staleReanalysisRequest = map[string]any{"cause": CauseApplyActionStale,
 // status.reanalysis, and did not close it.
 func wantKeptOpen(t *testing.T, c *writerCase, name, why string) {
 	t.Helper()
+	wantKeptOpenWith(t, c, name, AutomaticReanalysisFailed, why)
+}
+
+func wantKeptOpenWith(t *testing.T, c *writerCase, name, prefix, why string) {
+	t.Helper()
 	inc := c.kube.get(ns, name)
 	s := st(inc)
 	eq(t, "state", s["state"], "Open")
@@ -23,8 +28,8 @@ func wantKeptOpen(t *testing.T, c *writerCase, name, why string) {
 		t.Error("spec.closed set: an automatic reanalysis closed an open incident")
 	}
 	eq(t, "closed reason", annotation(inc, AnnotationClosedReason), "")
-	if e := pyfmtStr(s["error"]); !strings.HasPrefix(e, AutomaticReanalysisFailed) || !strings.Contains(e, why) {
-		t.Errorf("error %q, want %q…%q", e, AutomaticReanalysisFailed, why)
+	if e := pyfmtStr(s["error"]); !strings.HasPrefix(e, prefix) || !strings.Contains(e, why) {
+		t.Errorf("error %q, want %q…%q", e, prefix, why)
 	}
 	re, _ := s["reanalysis"].(map[string]any)
 	eq(t, "reanalysis cause", re["cause"], CauseApplyActionStale)
@@ -42,7 +47,7 @@ func wantClosedAsFailed(t *testing.T, c *writerCase, name string) {
 	inc := c.kube.get(ns, name)
 	eq(t, "state", st(inc)["state"], "Closed")
 	eq(t, "closed reason", annotation(inc, AnnotationClosedReason), ClosedAnalysisFailed)
-	if strings.HasPrefix(pyfmtStr(st(inc)["error"]), AutomaticReanalysisFailed) {
+	if e := pyfmtStr(st(inc)["error"]); strings.HasPrefix(e, AutomaticReanalysisFailed) || strings.HasPrefix(e, AutomaticReanalysisNoFix) {
 		t.Errorf("error %q", st(inc)["error"])
 	}
 }
@@ -126,4 +131,40 @@ func TestARestartsRerunOfAReanalysisThatFailsFollowsItsCause(t *testing.T) {
 	eq(t, "rca calls", len(c.rca), 2)
 	wantKeptOpen(t, c, "stale-1", "503")
 	wantClosedAsFailed(t, c, "person-1")
+}
+
+// An automatic reanalysis whose answer has no scripts that can run, even after the correction
+// turn, goes back to Open too: an automatic action never ends an open incident, whatever its
+// failure. A person's reanalysis that fails so is closed, as before.
+// MUTATION: limiting the cause rule in giveUp to transient failures fails this.
+func TestAnAutomaticReanalysisWithoutAUsableFixGoesBackToOpen(t *testing.T) {
+	for _, bad := range []struct {
+		name   string
+		answer string
+		why    string
+	}{
+		{"no json block", "## Root cause\nchart 1.1.9 is missing", "no structured block"},
+		{"no howToFix", answer(map[string]any{"rootCause": map[string]any{"statement": "chart 1.1.9 is missing"}}), "no usable howToFix"},
+		{"no apply", answer(block(map[string]any{"precondition": how["precondition"], "verify": how["verify"]})), "no usable howToFix"},
+	} {
+		t.Run(bad.name, func(t *testing.T) {
+			c := newCase(t)
+			c.analyzedIncident("Open")
+			c.kube.writeSpec(ns, incName, map[string]any{"reanalysis": staleReanalysisRequest})
+			c.answer = bad.answer
+			if err := c.reanalyze(); err != nil {
+				t.Fatal(err)
+			}
+			wantKeptOpenWith(t, c, incName, AutomaticReanalysisNoFix, bad.why)
+
+			p := newCase(t)
+			p.analyzedIncident("Open")
+			p.kube.writeSpec(ns, incName, map[string]any{"reanalysis": map[string]any{"feedback": "wrong pod"}})
+			p.answer = bad.answer
+			if err := p.reanalyze(); err != nil {
+				t.Fatal(err)
+			}
+			wantClosedAsFailed(t, p, incName)
+		})
+	}
 }

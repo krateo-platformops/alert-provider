@@ -87,6 +87,10 @@ const Interrupted = "The analysis was interrupted: the alert-provider restarted 
 // leaves its incident Open (see giveUp).
 const AutomaticReanalysisFailed = "The automatic reanalysis failed: "
 
+// AutomaticReanalysisNoFix starts the error of an automatic reanalysis whose answer had no scripts
+// that can run, which leaves its incident Open too.
+const AutomaticReanalysisNoFix = "The automatic reanalysis produced no usable fix: "
+
 // intervalSeconds maps Alert spec.interval to the lookback window HyperDX counts the `where` rows
 // over.
 var intervalSeconds = map[string]int{"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
@@ -719,12 +723,13 @@ func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any,
 // closed the incident. A refused close falls back to Open with the error, as before failed analyses
 // were closed: the next incident of the alert supersedes and closes it.
 //
-// transient says the analysis never got an answer: the agent call kept failing through its retries,
-// or a restart interrupted it for good. Such a failure of an automatic reanalysis
-// (status.reanalysis.cause ApplyActionStale, which incident-provider filed on an Open incident) does
-// not close the incident: an automatic action never ends an open incident. It goes back to Open with
-// the error (automaticFailure) and status.reanalysis as written, so a person can ask for a
-// reanalysis again. A person's reanalysis, and a first analysis, are closed as above.
+// An automatic reanalysis (status.reanalysis.cause ApplyActionStale, which incident-provider filed
+// on an Open incident) is never closed, whatever its failure: an automatic action never ends an
+// open incident. It goes back to Open with the error and status.reanalysis as written, so a person
+// can ask for a reanalysis again. transient picks the error: the analysis never got an answer (the
+// agent call kept failing through its retries, or a restart interrupted it for good), else the
+// answer had no scripts that can run (see automaticFailure). A person's reanalysis, and a first
+// analysis, are closed as above.
 func (w *Writer) giveUp(ctx context.Context, ns, name string, st map[string]any, transient bool) (bool, error) {
 	incident, err := w.kube.Get(ctx, ns, name)
 	if err != nil {
@@ -733,8 +738,8 @@ func (w *Writer) giveUp(ctx context.Context, ns, name string, st map[string]any,
 	if !analyzingOrUnset(incident) || closedInSpec(incident) {
 		return false, w.finish(ctx, ns, name, st, false)
 	}
-	if transient && automaticReanalysis(incident) {
-		st["error"] = automaticFailure(pyfmt.Str(st["error"]))
+	if automaticReanalysis(incident) {
+		st["error"] = automaticFailure(pyfmt.Str(st["error"]), transient)
 		logging.WithContext(w.log, ctx).Info(fmt.Sprintf(
 			"[incident] %s/%s: the automatic reanalysis failed; back to Open with the error, not closed", ns, name))
 		return false, w.finish(ctx, ns, name, st, true)
@@ -794,8 +799,11 @@ func automaticReanalysis(incident map[string]any) bool {
 }
 
 // automaticFailure is the status.error of an automatic reanalysis that failed: why, after
-// AutomaticReanalysisFailed.
-func automaticFailure(why string) string {
+// AutomaticReanalysisFailed when it got no answer (transient), else after AutomaticReanalysisNoFix.
+func automaticFailure(why string, transient bool) string {
+	if !transient {
+		return AutomaticReanalysisNoFix + why
+	}
 	for _, p := range []string{"The analysis failed: ", "The analysis was interrupted: "} {
 		why = strings.TrimPrefix(why, p)
 	}

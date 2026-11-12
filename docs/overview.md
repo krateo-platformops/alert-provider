@@ -281,13 +281,13 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
   incident supersedes it (step 6). Should the close patch be refused, the analysis is written
   `Open` with the error, and that next incident closes it.
 - The one exception is an automatic reanalysis (`status.reanalysis.cause: ApplyActionStale`,
-  filed by incident-provider on an `Open` incident) that got no answer: its RCA failed
-  transiently through all its retries, or a restart interrupted it past its recovery. An
-  automatic action never ends an open incident, so it goes back to `Open`, not closed, with
-  `status.error` `The automatic reanalysis failed: <why>` and `status.reanalysis` kept; a person
-  can ask for a reanalysis again. Like any `Open` incident without scripts it is a failed analysis
-  to the alert's next incident, which supersedes it. A person's reanalysis that fails is closed
-  as above.
+  filed by incident-provider on an `Open` incident) that fails, however it fails. An automatic
+  action never ends an open incident, so it goes back to `Open`, not closed, with
+  `status.reanalysis` kept and `status.error` saying why: `The automatic reanalysis failed: <why>`
+  when it got no answer (its RCA failed transiently through all its retries, or a restart
+  interrupted it past its recovery), `The automatic reanalysis produced no usable fix: <why>`
+  when the answer had no scripts that can run, even after the correction turn. A person can ask
+  for a reanalysis again. A person's reanalysis that fails is closed as above.
 - An incident a human closed or moved on while it was analyzing keeps its state (`Closed` is
   final): the analysis is written without a state, and a failed one is not closed again.
 - At startup the provider runs again the RCA of every incident a restart left `Analyzing`, off
@@ -386,6 +386,11 @@ already being analyzed, and a `Resolved` or `Closed` one is over. So is a reques
 labelled `observability.krateo.io/analysis: human`, which a person analyzes. incident-provider
 mirrors this rule (`writerAnswers`) to file `ApplyActionStale` requests only where they are
 answered; a change to it here goes there too.
+
+A failed automatic reanalysis left `Open` without scripts is, like any such incident, a failed
+analysis to its alert: if the alert fires again past `config.failedAnalysisHold` and nothing else
+covers the firing, the new incident, with a fresh RCA, supersedes it (`superseded-by`) and closes
+it. That is the normal lifecycle of a new firing, not the automatic reanalysis closing anything.
 
 ## Incident comparison
 
