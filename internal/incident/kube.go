@@ -25,7 +25,9 @@ var (
 // the apiserver's status code (see code).
 type Kube interface {
 	Get(ctx context.Context, namespace, name string) (map[string]any, error)
-	// List returns the Incidents in namespace that match the label selector.
+	// List returns the Incidents in namespace that match the label selector, WITHOUT spec.prompt:
+	// the prompt is nearly all of an Incident (about 20 KB), an alert can hold hundreds of
+	// Incidents, and no list reader needs it. Get one Incident for its prompt.
 	List(ctx context.Context, namespace, selector string) ([]map[string]any, error)
 	Create(ctx context.Context, obj map[string]any) (map[string]any, error)
 	// PatchStatus merges patch into the Incident's status subresource. A patch whose
@@ -81,21 +83,34 @@ func (k *kube) List(ctx context.Context, namespace, selector string) ([]map[stri
 	if err != nil {
 		return nil, err
 	}
-	l := &unstructured.UnstructuredList{}
-	l.SetGroupVersionKind(incidentListGVK)
-	if err := k.reader.List(ctx, l, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: sel}); err != nil {
-		return nil, err
-	}
-	out := make([]map[string]any, 0, len(l.Items))
-	for i := range l.Items {
-		m, err := decode(l.Items[i].Object)
-		if err != nil {
+	// Page by page, each page's prompts dropped before it is kept: what is held is one page and
+	// about 1 KB per Incident, never every Incident whole (demo: 1957 Incidents, 37.8 MB of JSON,
+	// OOMKilled the provider at startup under 256Mi when listed in one piece).
+	var out []map[string]any
+	cont := ""
+	for {
+		l := &unstructured.UnstructuredList{}
+		l.SetGroupVersionKind(incidentListGVK)
+		if err := k.reader.List(ctx, l, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: sel},
+			client.Limit(listPage), client.Continue(cont)); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		for i := range l.Items {
+			unstructured.RemoveNestedField(l.Items[i].Object, "spec", "prompt")
+			m, err := decode(l.Items[i].Object)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, m)
+		}
+		if cont = l.GetContinue(); cont == "" {
+			return out, nil
+		}
 	}
-	return out, nil
 }
+
+// listPage is how many Incidents one List call reads.
+const listPage = 100
 
 func (k *kube) Create(ctx context.Context, obj map[string]any) (map[string]any, error) {
 	b, err := json.Marshal(obj)

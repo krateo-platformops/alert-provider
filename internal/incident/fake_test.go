@@ -177,7 +177,12 @@ func (f *fakeKube) List(_ context.Context, ns, selector string) ([]map[string]an
 		labels, _ := meta["labels"].(map[string]any)
 		v, ok := labels[key]
 		if meta["namespace"] == ns && ok && (!hasValue || v == value) {
-			out = append(out, clone(obj))
+			// As the real List: no spec.prompt (see Kube.List).
+			c := clone(obj)
+			if sp, ok := c["spec"].(map[string]any); ok {
+				delete(sp, "prompt")
+			}
+			out = append(out, c)
 		}
 	}
 	return out, nil
