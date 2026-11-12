@@ -193,6 +193,11 @@ type AlertStatus struct {
 	// OkSince is when the alert last turned OK; empty while state is anything but OK.
 	OkSince string `json:"okSince,omitempty"`
 
+	// StateObservedAt is when the provider last read the live HyperDX state into State, set on
+	// every pass that reads it. Ready says how that read went; this says whether reads still
+	// happen: a provider that is down leaves Ready as it was, and only this stamp grows old.
+	StateObservedAt string `json:"stateObservedAt,omitempty"`
+
 	// Phase is the reconcile phase: Pending, Invalid, Synced, SpecDrift or Error.
 	Phase string `json:"phase,omitempty"`
 

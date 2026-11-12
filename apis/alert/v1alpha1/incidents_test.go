@@ -102,4 +102,10 @@ func TestTheCRDAdmitsEveryTypeAndShowsTheCondition(t *testing.T) {
 	if got, want := cols["Incidents"], `.status.conditions[?(@.type=="`+string(TypeOpensIncidents)+`")].status`; got != want {
 		t.Errorf("Incidents column %q, want %q", got, want)
 	}
+	if got, want := cols["Observed"], ".status.stateObservedAt"; got != want {
+		t.Errorf("Observed column %q, want %q", got, want)
+	}
+	if _, ok := v.Schema.OpenAPIV3Schema.Properties["status"].Properties["stateObservedAt"]; !ok {
+		t.Error("status.stateObservedAt is not in the schema: an apiserver would prune it")
+	}
 }

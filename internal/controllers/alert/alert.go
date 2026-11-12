@@ -533,7 +533,9 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 	if e.plan.dashboardID == "" {
 		e.plan.dashboardID = a.Status.HyperdxDashboardID
 	}
-	a.Status.OkSince = OkSince(a.Status, st, now())
+	at := now()
+	a.Status.OkSince = OkSince(a.Status, st, at)
+	a.Status.StateObservedAt = at
 	a.Status.HyperdxAlertID = e.plan.alertID
 	if d, _ := alert["dashboardId"].(string); d != "" {
 		a.Status.HyperdxDashboardID = d
@@ -707,7 +709,9 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	}
 	st := pyfmt.Str(res["state"])
 	a.Status.HyperdxAlertID, a.Status.HyperdxDashboardID = pyfmt.Str(res["id"]), dash
-	a.Status.OkSince = OkSince(a.Status, st, now())
+	at := now()
+	a.Status.OkSince = OkSince(a.Status, st, at)
+	a.Status.StateObservedAt = at
 	// An empty error clears a refusal (an Alert created before its Metric) or an earlier failure:
 	// this pass's status write is the one that says the Alert is Synced.
 	a.Status.State, a.Status.Phase, a.Status.Error = st, v1alpha1.PhaseSynced, ""
