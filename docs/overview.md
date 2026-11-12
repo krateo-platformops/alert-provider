@@ -258,7 +258,7 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 - One evaluation per alert runs at a time: while one is still comparing, the alert's next firing
   is skipped. The RCA runs after that evaluation ends, and its incident takes the firings that
   arrive meanwhile (step 3).
-- At most `MAX_CONCURRENT_ANALYSES` RCAs (2) run at once, so alerts that fire together do not
+- At most `config.maxConcurrentAnalyses` RCAs (2) run at once, so alerts that fire together do not
   spend the model's per-minute token quota at once and fail every RCA; a new incident waits in
   `Analyzing` for a slot.
 - An RCA that failed transiently (the call failed, the answer was empty, or it was only
@@ -280,13 +280,22 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
   keeps covering its alert's firings for `config.failedAnalysisHold` (step 3), then the next
   incident supersedes it (step 6). Should the close patch be refused, the analysis is written
   `Open` with the error, and that next incident closes it.
+- The one exception is an automatic reanalysis (`status.reanalysis.cause: ApplyActionStale`,
+  filed by incident-provider on an `Open` incident) that got no answer: its RCA failed
+  transiently through all its retries, or a restart interrupted it past its recovery. An
+  automatic action never ends an open incident, so it goes back to `Open`, not closed, with
+  `status.error` `The automatic reanalysis failed: <why>` and `status.reanalysis` kept; a person
+  can ask for a reanalysis again. Like any `Open` incident without scripts it is a failed analysis
+  to the alert's next incident, which supersedes it. A person's reanalysis that fails is closed
+  as above.
 - An incident a human closed or moved on while it was analyzing keeps its state (`Closed` is
   final): the analysis is written without a state, and a failed one is not closed again.
 - At startup the provider runs again the RCA of every incident a restart left `Analyzing`, off
   the startup path, on a thread of its own (`<name>#recovery-<n>`), with its `spec.prompt` (and a
   reanalysis' feedback), counted in `observability.krateo.io/analysis-recoveries`. An incident
   interrupted again (one recovery already), or without a prompt, is closed as a failed analysis
-  with the reason in `error`. A person's incident whose first write never landed is opened with
+  with the reason in `error`, except an automatic reanalysis, which goes back to `Open` with it
+  (above). A person's incident whose first write never landed is opened with
   it. An incident closed in spec is left to incident-provider.
 - The alert returning to OK changes nothing. From `Open` on, the incident controller runs its
   scripts and moves it, or a human closes it.

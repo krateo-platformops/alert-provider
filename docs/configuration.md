@@ -17,6 +17,7 @@ timestamp: 2026-08-20T00:00:00Z
 | `config.maxCompareCandidates` | `50` | how many of an alert's newest open, analyzed incidents one comparison weighs |
 | `config.incidentCoverWindow` | `24h` | Go duration an open, analyzed incident stays a comparison candidate after it opened or last covered a firing; past it, a firing it would have covered opens a new incident with a fresh RCA. `"0"` disables it |
 | `config.failedAnalysisHold` | `1800` | seconds an incident whose RCA failed keeps taking its alert's firings, though it is closed; past it, a new incident gets a fresh RCA and supersedes it |
+| `config.maxConcurrentAnalyses` | `2` | how many RCAs run at once; more wait, `Analyzing`, for a free slot (`MAX_CONCURRENT_ANALYSES`) |
 | `config.analysisRetries` | `2` | how many more times an RCA that failed transiently runs |
 | `config.analysisRetryDelay` | `120` | seconds before the first RCA retry; each next one waits twice as long |
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |

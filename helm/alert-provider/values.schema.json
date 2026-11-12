@@ -117,6 +117,13 @@
           "description": "Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the failed one stays Open until a person closes it or asks for a new analysis.",
           "default": 1800
         },
+        "maxConcurrentAnalyses": {
+          "type": "integer",
+          "minimum": 1,
+          "title": "Concurrent RCAs",
+          "description": "How many RCAs run at once; more wait, Analyzing, for a free slot. One RCA reads up to ~1M input tokens a minute, so alerts that fire together would otherwise exhaust the model's per-minute quota and fail every RCA at once.",
+          "default": 2
+        },
         "analysisRetries": {
           "type": "integer",
           "minimum": 0,
