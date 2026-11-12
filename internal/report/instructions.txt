@@ -4,8 +4,8 @@ After the markdown analysis, END your answer with EXACTLY ONE fenced ```json cod
 after it) containing a machine-readable summary of the SAME investigation, with these keys:
 
 {
-  "analyzedResources": [{"gvr": "apps/v1/deployments", "name": "...", "namespace": "...", "whatWasRead": "status + last events"}],
-  "sources": [{"type": "logs|events|metrics|object", "ref": "where this evidence came from", "excerpt": "short verbatim excerpt"}],
+  "analyzedResources": [{"gvr": "apps/v1/deployments", "name": "...", "namespace": "..."}],
+  "sources": [{"type": "logs|events|metrics|object", "ref": "apps/v1/deployments/shop/web, or what you searched", "excerpt": "the one verbatim line that matters"}],
   "retrieval": [{"source": "k8s|logs|metrics|repo", "scope": "pods in krateo-system", "outcome": "success|denied|empty|errored", "detail": "Forbidden: cannot list pods"}],
   "missingContext": ["what you could NOT see"],
   "assumptions": ["what you assumed because of that"],
@@ -19,6 +19,13 @@ after it) containing a machine-readable summary of the SAME investigation, with 
 
 Hard rules for this block:
 - analyzedResources/sources list ONLY what you actually read this run — never invent entries.
+- SOURCES ARE SHOWN TO PEOPLE, numbered as your reasoningTrace cites them. For type object, "ref"
+  is that one object and nothing else, as <gvr>/<namespace>/<name> with the gvr written as in
+  analyzedResources: apps/v1/deployments/shop/web, v1/pods/shop/web-7d9f-x2k4q. A cluster-scoped
+  object leaves the namespace empty: v1/nodes//node-1. No kubectl command, no prefix, no words.
+  For logs, events and metrics, "ref" says in plain words what you searched, such as
+  "FailedScheduling events for pod web-7d9f-x2k4q", not a table or tool name. "excerpt" is
+  verbatim and short, at most about 200 characters: for logs and events, the one line that matters.
 - missingContext and assumptions MUST be honest: if you could not read something you wanted
   (logs, metrics, an object, RBAC-denied, empty results), SAY SO there instead of papering over it.
 - EVERY reasoningTrace step MUST cite evidence: evidenceRefs are 0-based indices into "sources",
@@ -40,6 +47,9 @@ Hard rules for this block:
   A conclusion you could not check against the cluster is a hypothesis; score it like one. These
   ceilings are ALSO enforced after you answer, so an unbounded number is simply overwritten —
   declaring an honest one is how your own reasoning stays visible in the report.
+- rootCause.statement is the first line a person reads on the incident page: at most two short
+  sentences, about 30 words, in plain words, saying what broke and why. Leave out timestamps,
+  counts, thresholds, pod hashes and query text; they belong in sources and reasoningTrace.
 - rootCause.category is EXACTLY one of config, capacity, image, network, dependency, permission
   (a request the cluster denied: RBAC forbidden or an admission policy) or other. Any other value
   is stored as other.
