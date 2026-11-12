@@ -27,6 +27,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -292,6 +293,15 @@ func (e *external) rowSource(a *v1alpha1.Alert) (map[string]any, error) {
 	return hyperdx.OfKind(e.sources, kind)
 }
 
+// describe sets status.type and the OpensIncidents condition. Both follow from the spec, the pause
+// annotation and the namespace, so every pass sets them, and Update sets them again: a status
+// Observe sets is lost when provider-runtime adds the finalizer to a new Alert, which reloads it.
+// An unchanged condition keeps its lastTransitionTime.
+func describe(home string, a *v1alpha1.Alert) {
+	a.Status.Type = a.AlertType()
+	a.SetConditions(a.OpensIncidents(home))
+}
+
 // refuse is the observation of an Alert refused with why: nothing is pushed, and Update writes the
 // refusal to the status, once.
 func (e *external) refuse(a *v1alpha1.Alert, why string) reconciler.ExternalObservation {
@@ -434,6 +444,7 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 		a.SetConditions(prv1.Deleting())
 		return reconciler.ExternalObservation{ResourceExists: a.Status.HyperdxAlertID != "" || a.Status.HyperdxDashboardID != ""}, nil
 	}
+	describe(e.home, a)
 	if e.throttled != nil {
 		obs, _ := e.throttle(ctx, a, e.throttled)
 		return obs, nil
@@ -658,6 +669,7 @@ func (e *external) update(ctx context.Context, mg resource.Managed) error {
 	if !ok {
 		return errNotAlert
 	}
+	describe(e.home, a)
 	// Reached only without a governor to defer the pass (see throttle): the refusal is then this
 	// pass's error, and nothing is pushed on a plan Observe never finished.
 	if err := e.plan.throttled; err != nil {
@@ -795,24 +807,25 @@ func (f *firings) start(ctx context.Context, a *v1alpha1.Alert, source map[strin
 	f.mu.Unlock()
 	// Its lines are the span ctx carries: provider-runtime's observe, or update on a creating pass.
 	log := logging.WithContext(f.log, ctx)
-	if a.Paused() {
-		log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", hyperdxName(f.home, a)))
-		return
-	}
-	// The RCA agent reads the whole platform, so its analysis of a tenant's alert could quote other
-	// tenants' data: an Alert outside the home namespace is the ALERT state mirrored on it and
-	// HyperDX's notification, never a comparison, an Incident or an RCA.
-	if a.Namespace != f.home {
-		log.Info(fmt.Sprintf("[reconciler] Alert %s is outside %s; no incident (only %s Alerts are root-caused)", hyperdxName(f.home, a), f.home, f.home))
-		return
-	}
-	// The incident writer compares and root-causes the RECORDS (log records or spans) an alert
-	// counts. A metric has
-	// none, and an aggregated value is not a count (the prompt would describe the wrong
-	// threshold), so an aggregated firing is the ALERT state mirrored on the Alert, and HyperDX's
-	// notification through the webhook.
-	if a.Aggregated() {
-		log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", hyperdxName(f.home, a)))
+	// The gate is the OpensIncidents condition the status carries, so the two never disagree.
+	if c := a.OpensIncidents(f.home); c.Status != metav1.ConditionTrue {
+		switch c.Reason {
+		// The RCA agent reads the whole platform, so its analysis of a tenant's alert could quote
+		// other tenants' data: an Alert outside the home namespace is the ALERT state mirrored on
+		// it and HyperDX's notification, never a comparison, an Incident or an RCA.
+		case v1alpha1.ReasonOutsideHomeNamespace:
+			log.Info(fmt.Sprintf("[reconciler] Alert %s is outside %s; no incident (only %s Alerts are root-caused)", hyperdxName(f.home, a), f.home, f.home))
+		// The incident writer compares and root-causes the RECORDS (log records or spans) an
+		// alert counts. A metric has none, and an aggregated value is not a count (the prompt
+		// would describe the wrong threshold), so an aggregated firing is the ALERT state mirrored
+		// on the Alert, and HyperDX's notification through the webhook.
+		case v1alpha1.ReasonAggregatedValue:
+			log.Info(fmt.Sprintf("[reconciler] Alert %s fires on an aggregated value; no incident (incidents read counted log records)", hyperdxName(f.home, a)))
+		case v1alpha1.ReasonPaused:
+			log.Info(fmt.Sprintf("[reconciler] Alert %s is paused; firing skipped", hyperdxName(f.home, a)))
+		default:
+			log.Info(fmt.Sprintf("[reconciler] Alert %s opens no incident: %s", hyperdxName(f.home, a), c.Message))
+		}
 		return
 	}
 	alert := incident.Alert{Namespace: a.Namespace, HumanAnalysis: a.Labels[incident.LabelAnalysis] == incident.AnalysisHuman, Alert: compare.Alert{

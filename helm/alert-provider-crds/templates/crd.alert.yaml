@@ -27,6 +27,13 @@ spec:
         - name: Phase
           type: string
           jsonPath: .status.phase
+        - name: Type
+          type: string
+          jsonPath: .status.type
+        - name: Incidents
+          type: string
+          description: Whether a firing opens an incident (the OpensIncidents condition).
+          jsonPath: .status.conditions[?(@.type=="OpensIncidents")].status
         - name: Interval
           type: string
           jsonPath: .spec.interval
@@ -302,7 +309,11 @@ spec:
               properties:
                 conditions:
                   type: array
-                  description: Conditions of the reconcile (Ready, Synced), written by provider-runtime.
+                  description: >
+                    Ready and Synced, written by provider-runtime, and OpensIncidents, written by the
+                    provider each pass: True (reason CountsRecords) when a firing opens an incident,
+                    False when it does not, with reason OutsideHomeNamespace, AggregatedValue or
+                    Paused, in that order of precedence, and a message saying why.
                   items:
                     type: object
                     required: [lastTransitionTime, reason, status, type]
@@ -340,6 +351,14 @@ spec:
                     aggregation cannot apply to the Metric's type) / Synced (the CR's spec IS the
                     live alert) / SpecDrift (the spec could not be pushed — the live alert does
                     NOT match this CR) / Error.
+                type:
+                  type: string
+                  enum: [Logs, Traces, Metric, LogValue, TraceValue]
+                  description: >
+                    What the alert evaluates, from its spec: a count of log rows (Logs) or spans
+                    (Traces), a metric (Metric), or a value read from log rows (LogValue) or spans
+                    (TraceValue). Only Logs and Traces alerts open incidents (see the OpensIncidents
+                    condition).
                 error:
                   type: string
                 groups:

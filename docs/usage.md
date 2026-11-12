@@ -119,7 +119,8 @@ spec:
   budget over a longer period is expressed per day.
 - The count rules under `threshold` do not apply: a metric's value can be anything.
 - A metric firing opens no Incident (incidents read log records); its `status.state` is `ALERT`
-  and HyperDX notifies through the webhook.
+  and HyperDX notifies through the webhook. Its `status.type` is `Metric`, and its
+  `OpensIncidents` condition is `False` with reason `AggregatedValue`.
 - `groupBy` evaluates one series per group, e.g. per container, so a healthy series cannot mask
   an unhealthy one, and `consecutiveWindows` waits that many intervals before firing; the series
   that are ALERT are listed in `status.groups` (see [the readiness example](../examples/alerts/README.md#alerting-per-container)).
@@ -132,7 +133,8 @@ spec:
 or RCA runs. The reconciler still pushes the spec to HyperDX and mirrors
 its state, so a paused alert can be corrected and watched before it is resumed. Incidents already
 open keep their checks, and an RCA already running finishes. Any other value, or no annotation,
-resumes it on the next pass.
+resumes it on the next pass. A paused alert's `OpensIncidents` condition is `False` with reason
+`Paused`, unless another reason already keeps it from opening incidents.
 
 ```sh
 kubectl annotate alert <name> -n krateo-system krateo.io/paused=true --overwrite
@@ -168,5 +170,6 @@ kubectl create rolebinding krateo-alert-viewer -n team-a --clusterrole=krateo-al
 Only the platform creates them: the tenant needs no write on Alerts. A tenant's Alert is pushed to
 HyperDX as `<namespace>/<name>` and mirrors its state (`status.state`, `status.phase`), but a
 firing opens no Incident and runs no RCA: incident-agent reads the whole platform, and its analysis
-could quote other tenants' data. Its `metricRef` names a Metric in its own namespace. Only the
-release namespace's Alerts are root-caused.
+could quote other tenants' data. Its `OpensIncidents` condition says so: `False`, reason
+`OutsideHomeNamespace`. Its `metricRef` names a Metric in its own namespace. Only the release
+namespace's Alerts are root-caused.
