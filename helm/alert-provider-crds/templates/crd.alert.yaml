@@ -34,6 +34,10 @@ spec:
           type: string
           description: Whether a firing opens an incident (the OpensIncidents condition).
           jsonPath: .status.conditions[?(@.type=="OpensIncidents")].status
+        - name: Observed
+          type: date
+          description: When the provider last read the live HyperDX state (status.stateObservedAt). Older than a few poll intervals means the provider is not evaluating this Alert, whatever Ready says.
+          jsonPath: .status.stateObservedAt
         - name: Interval
           type: string
           jsonPath: .spec.interval
@@ -336,6 +340,13 @@ spec:
                 state:
                   type: string
                   description: Live HyperDX alert state (OK / ALERT / PENDING).
+                stateObservedAt:
+                  type: string
+                  format: date-time
+                  description: >
+                    When the provider last read the live HyperDX state into state, set on every
+                    pass that reads it. A provider that is down leaves Ready as it was; only this
+                    stamp grows old.
                 okSince:
                   type: string
                   format: date-time

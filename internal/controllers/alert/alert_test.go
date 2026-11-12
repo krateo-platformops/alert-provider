@@ -639,3 +639,21 @@ func compareAlert(name, where string) compare.Alert {
 	return compare.Alert{Name: name, DisplayName: display, Where: where, Interval: "15m", Threshold: "2",
 		ThresholdType: "above", Description: "m"}
 }
+
+// Every pass that reads the live HyperDX state stamps status.stateObservedAt, on the create
+// path and on the synced path, so a reader can tell a provider that stopped evaluating (the stamp
+// grows old) from one that evaluates (Ready alone stays as the last pass left it).
+func TestStateObservedAtIsStampedEveryPass(t *testing.T) {
+	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
+	h.pass(1) // the create path
+	first := h.status(k).StateObservedAt
+	if first == "" {
+		t.Fatal("create: no stateObservedAt")
+	}
+	time.Sleep(10 * time.Millisecond)
+	h.pass(1) // the synced path
+	second := h.status(k).StateObservedAt
+	if second == "" || second == first {
+		t.Fatalf("synced pass: stateObservedAt %q, want a newer stamp than %q", second, first)
+	}
+}
