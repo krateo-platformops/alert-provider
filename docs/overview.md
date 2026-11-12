@@ -373,7 +373,10 @@ feedback is titled `Why the analysis is requested again:`. A reanalysis a restar
 reruns with the cause recorded in `status.reanalysis`.
 
 A request on an incident in any other state is removed unanswered: an `Analyzing` incident is
-already being analyzed, and a `Resolved` or `Closed` one is over.
+already being analyzed, and a `Resolved` or `Closed` one is over. So is a request on an incident
+labelled `observability.krateo.io/analysis: human`, which a person analyzes. incident-provider
+mirrors this rule (`writerAnswers`) to file `ApplyActionStale` requests only where they are
+answered; a change to it here goes there too.
 
 ## Incident comparison
 
