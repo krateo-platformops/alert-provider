@@ -27,9 +27,19 @@ build: ## build all packages
 test: ## run unit tests
 	go test -race -cover ./...
 
+# The control plane of the real-API-server tests (build tag integration). setup-envtest is pinned
+# to the head of controller-runtime's release-0.25 branch, the controller-runtime in go.mod.
+ENVTEST_K8S_VERSION ?= 1.37.x
+SETUP_ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20261103101737-9603adbb18be
+
+.PHONY: test-integration
+test-integration: ## run the real-API-server (envtest) tests
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
+	  go test -race -count=1 -tags integration -run Envtest ./...
+
 .PHONY: lint
-lint: ## run go vet
-	go vet ./...
+lint: ## run go vet, the integration tests included
+	go vet -tags integration ./...
 
 .PHONY: lint-charts
 lint-charts: ## helm lint and render every chart, with CHART_VERSION set to 0.0.0
@@ -45,4 +55,4 @@ image: ## build the image
 	docker build -t $(IMAGE):$(VERSION) .
 
 .PHONY: check
-check: build lint test check-generate lint-charts ## everything CI runs
+check: build lint test test-integration check-generate lint-charts ## everything CI runs
