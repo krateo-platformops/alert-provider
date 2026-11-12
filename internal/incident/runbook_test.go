@@ -61,8 +61,13 @@ func TestAFiringsRunbookReachesTheRCAPromptOnly(t *testing.T) {
 	var stored string
 	incidents, _ := c.kube.List(context.Background(), ns, LabelAlert+"="+alertName)
 	for _, inc := range incidents {
-		if inc["metadata"].(map[string]any)["name"] != alertName+"-x" {
-			stored = inc["spec"].(map[string]any)["prompt"].(string)
+		if name := inc["metadata"].(map[string]any)["name"].(string); name != alertName+"-x" {
+			// A listed Incident carries no prompt (Kube.List): read it whole.
+			full, err := c.kube.Get(context.Background(), ns, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored = full["spec"].(map[string]any)["prompt"].(string)
 		}
 	}
 	if !strings.Contains(stored, guidanceLabel) || !strings.Contains(stored, "**Never** drop audit partitions.") {

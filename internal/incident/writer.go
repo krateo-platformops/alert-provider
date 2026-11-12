@@ -810,9 +810,20 @@ func automaticFailure(why string, transient bool) string {
 	return AutomaticReanalysisFailed + why
 }
 
-func (w *Writer) recoverAnalysis(ctx context.Context, ns string, incident map[string]any) {
+func (w *Writer) recoverAnalysis(ctx context.Context, ns string, listed map[string]any) {
+	// Listed Incidents carry no prompt: read this one whole, which is also its latest version.
+	name := str(metadata(listed), "name")
+	incident, err := w.kube.Get(ctx, ns, name)
+	if err != nil {
+		if code(err) != 404 {
+			w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
+		}
+		return
+	}
+	if !analyzingOrUnset(incident) || closedInSpec(incident) {
+		return // moved on since it was listed
+	}
 	m := metadata(incident)
-	name := str(m, "name")
 	n, _ := strconv.Atoi(pyfmt.Str(annotations(incident)[AnnotationRecoveries]))
 	prompt := str(spec(incident), "prompt")
 	if n >= maxRecoveries || prompt == "" {

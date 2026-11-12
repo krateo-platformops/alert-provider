@@ -856,7 +856,11 @@ func TestTwoSameDisplayNameAlertsGetTwoIncidents(t *testing.T) {
 	for _, a := range []struct{ name, where string }{{"krateo-composition-reconcile-error", "where-k"}, {"sre-krateo-composition-reconcile-error", "where-s"}} {
 		items, _ := c.kube.List(context.Background(), ns, LabelAlert+"="+a.name)
 		eq(t, a.name, len(items), 1)
-		p := items[0]["spec"].(map[string]any)["prompt"].(string)
+		full, err := c.kube.Get(context.Background(), ns, items[0]["metadata"].(map[string]any)["name"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := full["spec"].(map[string]any)["prompt"].(string)
 		if !strings.Contains(p, "`"+a.where+"`") || !strings.Contains(p, display) {
 			t.Errorf("prompt %q", p)
 		}
