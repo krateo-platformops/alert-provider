@@ -50,8 +50,9 @@ and dashboard. A reconcile is one pass, every `config.reconcileInterval`:
   its firings stop.
 - The finalizer `observability.krateo.io/hyperdx-cleanup` removes the HyperDX alert and dashboard
   before the Alert goes, best-effort, so a delete is never wedged on HyperDX.
-- `status.conditions` carries provider-runtime's `Ready` and `Synced`; `status.phase` keeps its
-  meaning. The controller emits no warning Events: the seeded reconcile-error alert counts
+- `status.conditions` carries provider-runtime's `Ready` and `Synced`, and the provider's
+  `OpensIncidents` (see [Alert status](#alert-status)); `status.phase` keeps its meaning. The
+  controller emits no warning Events: the seeded reconcile-error alert counts
   `CannotObserveExternalResource` Events, and a HyperDX outage would make it fire on itself.
 
 ## Alert sources
@@ -425,6 +426,22 @@ it. That is the normal lifecycle of a new firing, not the automatic reanalysis c
 The reconciler mirrors the HyperDX alert's `state` onto `status.state` every cycle, and writes
 `status.okSince` in the same patch: the time the alert last turned OK, kept while it stays OK and
 unset in any other state. It is for display ("OK for 13 min") and never closes anything.
+
+Every pass also writes what the Alert evaluates and whether its firings open incidents, both
+derived from the spec, the pause annotation and the namespace, so a reader of the CR needs no rule
+to tell them apart. `kubectl get alerts` shows both, as the `Type` and `Incidents` columns.
+
+- `status.type` is `Logs` or `Traces` for an Alert that counts log rows or spans, `Metric` for one
+  that aggregates a metric, and `LogValue` or `TraceValue` for one that aggregates a value read
+  from log rows or spans.
+- The `OpensIncidents` condition is `True` (reason `CountsRecords`) when a firing opens an
+  incident, else `False` with the first reason that holds: `OutsideHomeNamespace` (see
+  [Namespaces](#namespaces)), `AggregatedValue` (a metric or a value has no records to compare and
+  root-cause), `Paused` (`krateo.io/paused`). The reasons a person cannot lift come first, so a
+  paused metric Alert reads `AggregatedValue`: resuming it would open no incident either. Its
+  message says why in a sentence.
+- The firing gate reads the same condition, so the status and what the provider does never
+  disagree. An unchanged condition keeps its `lastTransitionTime`.
 
 A grouped Alert's `status.groups` lists its series that are ALERT, computed by the provider each
 pass, since HyperDX's API carries only the roll-up and never resolves a series that is gone. The

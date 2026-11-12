@@ -51,6 +51,31 @@ const (
 	SourceTraces = "traces"
 )
 
+// Types of an Alert (status.type): what it evaluates, which follows from its spec.
+const (
+	// AlertTypeLogs counts log rows.
+	AlertTypeLogs = "Logs"
+	// AlertTypeTraces counts spans.
+	AlertTypeTraces = "Traces"
+	// AlertTypeMetric aggregates a metric.
+	AlertTypeMetric = "Metric"
+	// AlertTypeLogValue aggregates a value read from log rows.
+	AlertTypeLogValue = "LogValue"
+	// AlertTypeTraceValue aggregates a value read from spans.
+	AlertTypeTraceValue = "TraceValue"
+)
+
+// TypeOpensIncidents is the condition that says whether an Alert's firings open incidents, and
+// its reason why. One reason when they do, three when they do not.
+const (
+	TypeOpensIncidents prv1.ConditionType = "OpensIncidents"
+
+	ReasonCountsRecords        prv1.ConditionReason = "CountsRecords"
+	ReasonOutsideHomeNamespace prv1.ConditionReason = "OutsideHomeNamespace"
+	ReasonAggregatedValue      prv1.ConditionReason = "AggregatedValue"
+	ReasonPaused               prv1.ConditionReason = "Paused"
+)
+
 // MetricRef names the Metric an Alert aggregates. It carries only a name, resolved in the Alert's
 // own namespace, so it cannot reach another tenant's Metric.
 type MetricRef struct {
@@ -171,6 +196,9 @@ type AlertStatus struct {
 	// Phase is the reconcile phase: Pending, Invalid, Synced, SpecDrift or Error.
 	Phase string `json:"phase,omitempty"`
 
+	// Type is what the Alert evaluates (AlertType): Logs, Traces, Metric, LogValue or TraceValue.
+	Type string `json:"type,omitempty"`
+
 	// Groups are the series of a grouped Alert (spec.groupBy) that are ALERT, computed by the
 	// provider each pass: HyperDX's API carries only the rolled-up state. They are judged one
 	// interval late, since the newest completed interval may not be ingested yet, so they may trail
@@ -243,6 +271,51 @@ func (mg *Alert) Aggregated() bool {
 // Paused says the Alert's firings are skipped.
 func (mg *Alert) Paused() bool {
 	return mg.Annotations[AnnotationPaused] == "true"
+}
+
+// AlertType is what the Alert evaluates: a metric, a value read from rows, or a count of rows, the
+// rows being log rows or spans (spec.source).
+func (mg *Alert) AlertType() string {
+	traces := mg.RowSource() == SourceTraces
+	switch {
+	case mg.IsMetric():
+		return AlertTypeMetric
+	case mg.Aggregated() && traces:
+		return AlertTypeTraceValue
+	case mg.Aggregated():
+		return AlertTypeLogValue
+	case traces:
+		return AlertTypeTraces
+	default:
+		return AlertTypeLogs
+	}
+}
+
+// OpensIncidents is the OpensIncidents condition: whether the Alert's firings open incidents, and
+// why not. home is the provider's home namespace. The firing gate reads the same condition, so the
+// status says what the provider does. The reasons that a person cannot lift come first:
+// resuming a paused metric Alert would still open no incident, so it reads AggregatedValue.
+func (mg *Alert) OpensIncidents(home string) prv1.Condition {
+	c := prv1.Condition{Type: TypeOpensIncidents, Status: metav1.ConditionFalse, LastTransitionTime: metav1.Now()}
+	switch {
+	case mg.Namespace != home:
+		c.Reason = ReasonOutsideHomeNamespace
+		c.Message = "Only the Alerts in " + home + " open incidents: the analysis reads every namespace, so it could quote another tenant's data."
+	case mg.Aggregated():
+		c.Reason = ReasonAggregatedValue
+		c.Message = "It compares an aggregated value; only an alert that counts log lines or spans opens incidents."
+	case mg.Paused():
+		c.Reason = ReasonPaused
+		c.Message = "Paused (" + AnnotationPaused + "): its firings are skipped until the annotation is removed."
+	default:
+		c.Status, c.Reason = metav1.ConditionTrue, ReasonCountsRecords
+		records := "log lines"
+		if mg.RowSource() == SourceTraces {
+			records = "spans"
+		}
+		c.Message = "A firing opens an incident, analysed from the " + records + " the alert counts."
+	}
+	return c
 }
 
 // GetAnnotations returns the annotations without AnnotationPaused. provider-runtime reads the
