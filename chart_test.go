@@ -206,3 +206,49 @@ func TestTheSchemaRefusesAMalformedCoverWindow(t *testing.T) {
 		}
 	}
 }
+
+// The RCA concurrency and retry knobs reach the Deployment, at today's defaults (2 at once, 2
+// retries, 120 s) and as set.
+// MUTATION: dropping MAX_CONCURRENT_ANALYSES from the Deployment, or changing a default, fails this.
+func TestTheRCAConcurrencyAndRetriesReachTheDeployment(t *testing.T) {
+	for _, c := range []struct {
+		set  []string
+		want map[string]string
+	}{
+		{nil, map[string]string{"MAX_CONCURRENT_ANALYSES": "2", "ANALYSIS_RETRIES": "2", "ANALYSIS_RETRY_DELAY": "120"}},
+		{[]string{"--set", "config.maxConcurrentAnalyses=4,config.analysisRetries=5,config.analysisRetryDelay=30"},
+			map[string]string{"MAX_CONCURRENT_ANALYSES": "4", "ANALYSIS_RETRIES": "5", "ANALYSIS_RETRY_DELAY": "30"}},
+	} {
+		dep, _ := render(t, c.set...)
+		got := map[string]string{}
+		for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+			if _, ok := c.want[e.Name]; ok {
+				got[e.Name] = e.Value
+			}
+		}
+		for k, v := range c.want {
+			if got[k] != v {
+				t.Errorf("%v: %s = %q, want %q", c.set, k, got[k], v)
+			}
+		}
+	}
+}
+
+// The schema refuses a concurrency under 1, which main would raise to 1 silently.
+func TestTheSchemaRefusesNoConcurrentRCAs(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is not on PATH")
+	}
+	for set, ok := range map[string]bool{"1": true, "8": true, "0": false, "-1": false} {
+		dir := filepath.Join(t.TempDir(), "alert-provider")
+		if out, err := exec.Command("cp", "-R", chartDir, dir).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		raw, _ := os.ReadFile(filepath.Join(dir, "Chart.yaml"))
+		_ = os.WriteFile(filepath.Join(dir, "Chart.yaml"), bytes.ReplaceAll(raw, []byte("CHART_VERSION"), []byte("0.0.0")), 0o600)
+		out, err := exec.Command("helm", "template", "t", dir, "--set", "config.maxConcurrentAnalyses="+set).CombinedOutput()
+		if (err == nil) != ok {
+			t.Errorf("config.maxConcurrentAnalyses=%s: rendered %v, want %v:\n%.300s", set, err == nil, ok, out)
+		}
+	}
+}

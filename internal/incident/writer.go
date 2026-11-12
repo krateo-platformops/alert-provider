@@ -83,6 +83,14 @@ const (
 // Interrupted is the error of an incident a restart left without its analysis.
 const Interrupted = "The analysis was interrupted: the alert-provider restarted before it finished."
 
+// AutomaticReanalysisFailed starts the error of an automatic reanalysis that got no answer, which
+// leaves its incident Open (see giveUp).
+const AutomaticReanalysisFailed = "The automatic reanalysis failed: "
+
+// AutomaticReanalysisNoFix starts the error of an automatic reanalysis whose answer had no scripts
+// that can run, which leaves its incident Open too.
+const AutomaticReanalysisNoFix = "The automatic reanalysis produced no usable fix: "
+
 // intervalSeconds maps Alert spec.interval to the lookback window HyperDX counts the `where` rows
 // over.
 var intervalSeconds = map[string]int{"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
@@ -714,13 +722,27 @@ func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any,
 // closed or moved on meanwhile is left to them, with the analysis written. It reports whether it
 // closed the incident. A refused close falls back to Open with the error, as before failed analyses
 // were closed: the next incident of the alert supersedes and closes it.
-func (w *Writer) giveUp(ctx context.Context, ns, name string, st map[string]any) (bool, error) {
+//
+// An automatic reanalysis (status.reanalysis.cause ApplyActionStale, which incident-provider filed
+// on an Open incident) is never closed, whatever its failure: an automatic action never ends an
+// open incident. It goes back to Open with the error and status.reanalysis as written, so a person
+// can ask for a reanalysis again. transient picks the error: the analysis never got an answer (the
+// agent call kept failing through its retries, or a restart interrupted it for good), else the
+// answer had no scripts that can run (see automaticFailure). A person's reanalysis, and a first
+// analysis, are closed as above.
+func (w *Writer) giveUp(ctx context.Context, ns, name string, st map[string]any, transient bool) (bool, error) {
 	incident, err := w.kube.Get(ctx, ns, name)
 	if err != nil {
 		return false, err
 	}
 	if !analyzingOrUnset(incident) || closedInSpec(incident) {
 		return false, w.finish(ctx, ns, name, st, false)
+	}
+	if automaticReanalysis(incident) {
+		st["error"] = automaticFailure(pyfmt.Str(st["error"]), transient)
+		logging.WithContext(w.log, ctx).Info(fmt.Sprintf(
+			"[incident] %s/%s: the automatic reanalysis failed; back to Open with the error, not closed", ns, name))
+		return false, w.finish(ctx, ns, name, st, true)
 	}
 	if err := w.kube.Patch(ctx, ns, name, map[string]any{
 		"metadata": map[string]any{"annotations": map[string]any{AnnotationClosedReason: ClosedAnalysisFailed}},
@@ -765,13 +787,36 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 	}
 }
 
+// automaticReanalysis says the incident's current analysis answers a reanalysis incident-provider
+// filed itself (status.reanalysis.cause ApplyActionStale), not a person.
+func automaticReanalysis(incident map[string]any) bool {
+	re, ok := status(incident)["reanalysis"].(map[string]any)
+	if !ok {
+		return false
+	}
+	cause, _ := reanalysisCause(re)
+	return cause == CauseApplyActionStale
+}
+
+// automaticFailure is the status.error of an automatic reanalysis that failed: why, after
+// AutomaticReanalysisFailed when it got no answer (transient), else after AutomaticReanalysisNoFix.
+func automaticFailure(why string, transient bool) string {
+	if !transient {
+		return AutomaticReanalysisNoFix + why
+	}
+	for _, p := range []string{"The analysis failed: ", "The analysis was interrupted: "} {
+		why = strings.TrimPrefix(why, p)
+	}
+	return AutomaticReanalysisFailed + why
+}
+
 func (w *Writer) recoverAnalysis(ctx context.Context, ns string, incident map[string]any) {
 	m := metadata(incident)
 	name := str(m, "name")
 	n, _ := strconv.Atoi(pyfmt.Str(annotations(incident)[AnnotationRecoveries]))
 	prompt := str(spec(incident), "prompt")
 	if n >= maxRecoveries || prompt == "" {
-		closed, err := w.giveUp(ctx, ns, name, map[string]any{"error": Interrupted, "completedAt": pyfmt.Isoformat(w.now())})
+		closed, err := w.giveUp(ctx, ns, name, map[string]any{"error": Interrupted, "completedAt": pyfmt.Isoformat(w.now())}, true)
 		switch {
 		case err != nil:
 			w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
@@ -929,7 +974,7 @@ func (w *Writer) RunAnalysis(ctx context.Context, ns, name, prompt, key string) 
 	span.SetAttributes(attrCorrections.Int(turns))
 	r.st["completedAt"] = pyfmt.Isoformat(w.now())
 	if r.st["howToFix"] == nil {
-		closed, err := w.giveUp(ctx, ns, name, r.st)
+		closed, err := w.giveUp(ctx, ns, name, r.st, r.transient != "")
 		if err != nil { // RecoverInterrupted handles it after a restart
 			log.Info(fmt.Sprintf("[err] incident %s/%s: analysis not written (%s)", ns, name, err))
 			span.SetStatus(codes.Error, err.Error())

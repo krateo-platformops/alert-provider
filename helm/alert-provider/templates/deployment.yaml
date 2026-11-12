@@ -200,6 +200,8 @@ spec:
               value: {{ .Values.config.incidentCoverWindow | quote }}
             - name: FAILED_ANALYSIS_HOLD
               value: {{ .Values.config.failedAnalysisHold | quote }}
+            - name: MAX_CONCURRENT_ANALYSES
+              value: {{ .Values.config.maxConcurrentAnalyses | quote }}
             - name: ANALYSIS_RETRIES
               value: {{ .Values.config.analysisRetries | quote }}
             - name: ANALYSIS_RETRY_DELAY
