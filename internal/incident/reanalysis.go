@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"go.opentelemetry.io/otel/codes"
@@ -60,12 +61,12 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 		if !ok {
 			return nil
 		}
-		labels, _ := metadata(incident)["labels"].(map[string]any)
-		human := labels[LabelAnalysis] == AnalysisHuman
-		if s, _ := state(incident); human || (s != "Open" && s != "Verifying") {
+		// The drop rule; incident-provider's writerAnswers mirrors it (see answers).
+		if !answers(incident) {
 			if err := w.dropRequest(ctx, ns, name); err != nil {
 				return err
 			}
+			s, _ := state(incident)
 			log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis not run (state %s)", ns, name, s))
 			return nil
 		}
@@ -111,6 +112,26 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 		return nil
 	}
 	return fmt.Errorf("incident %s/%s: no status write succeeded in %d attempts", ns, name, writeAttempts)
+}
+
+// answeredStates are the states in which Reanalyze answers a request. See answers.
+var answeredStates = []string{"Open", "Verifying"}
+
+// answers says whether Reanalyze answers a reanalysis request on incident rather than removing it
+// unanswered (dropRequest): incident is in an answeredStates state and is not labelled
+// LabelAnalysis=AnalysisHuman (a person analyzes it, no model runs).
+//
+// MIRRORED in incident-provider: writerAnswers in internal/controllers/incident/applytarget.go
+// files automatic (ApplyActionStale) reanalysis requests only where this answers them, so a
+// dropped request does not come back every poll. Change both together;
+// TestTheReanalysisDropRuleIsWhatIncidentProviderMirrors pins this one.
+func answers(incident map[string]any) bool {
+	labels, _ := metadata(incident)["labels"].(map[string]any)
+	if labels[LabelAnalysis] == AnalysisHuman {
+		return false
+	}
+	s, _ := state(incident)
+	return slices.Contains(answeredStates, s)
 }
 
 func (w *Writer) dropRequest(ctx context.Context, ns, name string) error {
