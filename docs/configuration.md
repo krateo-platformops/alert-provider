@@ -12,7 +12,7 @@ timestamp: 2026-08-20T00:00:00Z
 |---|---|---|
 | `image.repository` | `ghcr.io/krateo-platformops/alert-provider` | controller image |
 | `image.tag` | chart appVersion | image tag; pin to override |
-| `config.autopilotA2aUrl` | `http://incident-agent.krateo-system.svc:8080/` | the RCA agent's A2A endpoint |
+| `config.autopilotA2aUrl` | `http://autopilot.krateo-system.svc:8080/` | the RCA agent's A2A endpoint: autopilot, which delegates to incident-agent; through the gateway, the ledger also reads the sub-agents' sessions |
 | `config.compareModelConfig` | `gemini-flash` | the kagent ModelConfig whose model names the open incident that covers a firing; provider OpenAI or Gemini |
 | `config.maxCompareCandidates` | `50` | how many of an alert's newest open, analyzed incidents one comparison weighs |
 | `config.incidentCoverWindow` | `24h` | Go duration an open, analyzed incident stays a comparison candidate after it opened or last covered a firing; past it, a firing it would have covered opens a new incident with a fresh RCA. `"0"` disables it |
@@ -33,7 +33,7 @@ Role `krateo-alert-provider` covers the release namespace, the ClusterRole
 `krateo-alert-provider-alerts` (bound to the `krateo-alert-provider` ServiceAccount) the Alerts,
 their status, Metrics and Events everywhere.
 
-Runtime env (set on the Deployment) carries these, plus `A2A_TIMEOUT` (900 s, the longest silence on the RCA stream) and
+Runtime env (set on the Deployment) carries these, plus `A2A_TIMEOUT` (2700 s, the longest silence on the RCA stream) and
 `COMPARE_TIMEOUT` (60 s, one comparison). See `helm/alert-provider/templates/deployment.yaml`.
 
 ## Tracing

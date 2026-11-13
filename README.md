@@ -7,7 +7,7 @@ Turns a firing Krateo observability **Alert** into **Incidents**, one per proble
 ```
 every 60 s, Alert is ALERT in HyperDX → krateo-alert-provider
     → an open incident of the same problem? (one LLM call)        yes → nothing (it covers the firing)
-                                                                  no  → new Incident → A2A call to incident-agent
+                                                                  no  → new Incident → A2A call to autopilot → incident-agent
                                                                         → status: analysis + howToFix scripts, state Open
 ```
 
@@ -18,8 +18,9 @@ firing, and the handler:
    (`observability.krateo.io/v1alpha1`) that opened or last covered a firing within
    `config.incidentCoverWindow` (24h), which one causes its current records; that one covers
    the firing, which only stamps its `observability.krateo.io/last-covered-at` annotation,
-2. else creates one in state `Analyzing` and calls incident-agent over A2A (JSON-RPC
-   `message/stream`) with the incident's prompt,
+2. else creates one in state `Analyzing` and calls autopilot over A2A (JSON-RPC
+   `message/stream`) with the incident's prompt; autopilot hands it to incident-agent and relays
+   the answer unchanged,
 3. writes the analysis and its `howToFix` scripts to the Incident's status, in state `Open`.
 
 The incident controller (incident-controller) runs the scripts from there. See
@@ -43,8 +44,8 @@ The reconciler creates the HyperDX webhook and alerts from the `Alert` CRs.
 
 ## Config (env)
 - `NAMESPACE` (default `krateo-system`) — the home namespace: its Alerts keep their bare names in HyperDX and alone open Incidents, which it holds, as it does the Secrets and the ModelConfig. Alerts of other namespaces are reconciled too, with no Incident.
-- `AUTOPILOT_A2A_URL` — the RCA agent (chart default `http://incident-agent.krateo-system.svc:8080/`).
-- `A2A_TIMEOUT` (default `900`s) — the longest silence on the RCA stream; above the agentgateway LLM route's 600s timeout.
+- `AUTOPILOT_A2A_URL` — the RCA agent (chart default `http://autopilot.krateo-system.svc:8080/`).
+- `A2A_TIMEOUT` (default `2700`s) — the longest silence on the RCA stream, which is the whole of autopilot's delegation to incident-agent.
 - `COMPARE_MODEL_CONFIG` — the kagent ModelConfig whose model compares incidents (default `gemini-flash`).
 - `COMPARE_TIMEOUT` (default `60`s).
 
