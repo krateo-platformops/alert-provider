@@ -193,6 +193,13 @@ type AlertStatus struct {
 	// OkSince is when the alert last turned OK; empty while state is anything but OK.
 	OkSince string `json:"okSince,omitempty"`
 
+	// StateSince is when State last changed to its current value (RFC 3339): a lastTransitionTime
+	// for State. It moves only when a read finds a different state, never on a re-read of the same
+	// one, so "ALERT since 09:12" is the start of this firing, not the latest observation. Empty
+	// for an Alert already in its state before the provider wrote this field and not OK (an OK one
+	// takes okSince): the provider never saw that transition and does not invent its time.
+	StateSince string `json:"stateSince,omitempty"`
+
 	// StateObservedAt is when the provider last read the live HyperDX state into State, set on
 	// every pass that reads it. Ready says how that read went; this says whether reads still
 	// happen: a provider that is down leaves Ready as it was, and only this stamp grows old.

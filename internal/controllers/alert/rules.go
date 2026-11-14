@@ -278,6 +278,24 @@ func sqlString(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
 }
 
+// StateSince is status.stateSince for an Alert whose live state is now state: now when state
+// differs from the state last written, else the stamp already there. An Alert that was in this
+// state before the field existed has no stamp: an OK one takes okSince, the time it turned OK;
+// any other stays empty until its next transition, since its start was never observed.
+// Display-only: nothing reads it to open, close or resolve anything.
+func StateSince(st v1alpha1.AlertStatus, state, now string) string {
+	if state != st.State {
+		return now
+	}
+	if st.StateSince != "" {
+		return st.StateSince
+	}
+	if state == "OK" {
+		return st.OkSince
+	}
+	return ""
+}
+
 // OkSince is status.okSince for an Alert whose live state is now state: the time the alert last
 // turned OK, kept while it stays OK; an OK alert with none gets now. Empty in every other state.
 // Display-only: nothing reads it to close or resolve anything.
