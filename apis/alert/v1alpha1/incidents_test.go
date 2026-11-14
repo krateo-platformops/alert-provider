@@ -108,4 +108,7 @@ func TestTheCRDAdmitsEveryTypeAndShowsTheCondition(t *testing.T) {
 	if _, ok := v.Schema.OpenAPIV3Schema.Properties["status"].Properties["stateObservedAt"]; !ok {
 		t.Error("status.stateObservedAt is not in the schema: an apiserver would prune it")
 	}
+	if _, ok := v.Schema.OpenAPIV3Schema.Properties["status"].Properties["stateSince"]; !ok {
+		t.Error("status.stateSince is not in the schema: an apiserver would prune it")
+	}
 }

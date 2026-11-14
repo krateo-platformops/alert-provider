@@ -25,6 +25,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
 	"github.com/krateo-platformops/alert-provider/internal/hyperdx/hyperdxtest"
 	"github.com/krateo-platformops/alert-provider/internal/incident"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 const (
@@ -471,6 +472,73 @@ func TestOkSinceIsWrittenWithState(t *testing.T) {
 	h.pass(1) // the spec-drift path clears it
 	st := h.status(k)
 	eq(t, "drift", []string{st.Phase, st.State, st.OkSince}, []string{"SpecDrift", "ALERT", ""})
+}
+
+// --- stateSince ---
+
+func TestStateSinceRule(t *testing.T) {
+	now := "2026-11-14T10:00:00+00:00"
+	eq(t, "first read", StateSince(v1alpha1.AlertStatus{}, "OK", now), now)
+	eq(t, "OK -> ALERT", StateSince(v1alpha1.AlertStatus{State: "OK", StateSince: "t0"}, "ALERT", now), now)
+	eq(t, "ALERT -> OK", StateSince(v1alpha1.AlertStatus{State: "ALERT", StateSince: "t0"}, "OK", now), now)
+	eq(t, "-> PENDING", StateSince(v1alpha1.AlertStatus{State: "OK", StateSince: "t0"}, "PENDING", now), now)
+	eq(t, "-> not evaluated", StateSince(v1alpha1.AlertStatus{State: "ALERT", StateSince: "t0"}, "", now), now)
+	eq(t, "re-read ALERT", StateSince(v1alpha1.AlertStatus{State: "ALERT", StateSince: "t0"}, "ALERT", now), "t0")
+	eq(t, "re-read OK", StateSince(v1alpha1.AlertStatus{State: "OK", StateSince: "t0", OkSince: "t1"}, "OK", now), "t0")
+	// Written before the field existed: an OK alert knows when it turned OK; any other state's start
+	// was never observed, so it stays empty rather than claim the upgrade time.
+	eq(t, "upgrade, OK", StateSince(v1alpha1.AlertStatus{State: "OK", OkSince: "t1"}, "OK", now), "t1")
+	eq(t, "upgrade, ALERT", StateSince(v1alpha1.AlertStatus{State: "ALERT"}, "ALERT", now), "")
+	eq(t, "upgrade, ALERT -> OK", StateSince(v1alpha1.AlertStatus{State: "ALERT"}, "OK", now), now)
+}
+
+// stateSince moves on a transition and only then: every pass re-stamps stateObservedAt, while
+// stateSince stays at the time the current state began.
+func TestStateSinceMovesOnlyOnTransition(t *testing.T) {
+	h := newHarness(t, alertCR(k, "w", v1alpha1.AlertStatus{}))
+	h.pass(1) // the create path
+	created := h.status(k)
+	if created.State != "OK" || created.StateSince == "" {
+		t.Fatalf("create: %+v", created)
+	}
+	time.Sleep(10 * time.Millisecond)
+	h.pass(1) // a re-read of OK
+	reread := h.status(k)
+	eq(t, "re-read OK keeps it", reread.StateSince, created.StateSince)
+	if reread.StateObservedAt == created.StateObservedAt {
+		t.Fatalf("the re-read did not re-stamp stateObservedAt (%q): it proves nothing", reread.StateObservedAt)
+	}
+
+	h.api.Set("alerts", created.HyperdxAlertID, map[string]any{"state": "ALERT"})
+	time.Sleep(10 * time.Millisecond)
+	h.pass(1) // OK -> ALERT
+	firing := h.status(k)
+	if firing.State != "ALERT" || !after(t, firing.StateSince, created.StateSince) {
+		t.Fatalf("OK -> ALERT: state %q since %q, want ALERT since after %q", firing.State, firing.StateSince, created.StateSince)
+	}
+	time.Sleep(10 * time.Millisecond)
+	h.pass(1) // a re-read of ALERT
+	eq(t, "re-read ALERT keeps it", h.status(k).StateSince, firing.StateSince)
+
+	h.api.Set("alerts", created.HyperdxAlertID, map[string]any{"state": "OK"})
+	time.Sleep(10 * time.Millisecond)
+	h.pass(1) // ALERT -> OK
+	back := h.status(k)
+	if back.State != "OK" || !after(t, back.StateSince, firing.StateSince) {
+		t.Fatalf("ALERT -> OK: state %q since %q, want OK since after %q", back.State, back.StateSince, firing.StateSince)
+	}
+	eq(t, "an OK alert's stateSince is its okSince", back.StateSince, back.OkSince)
+}
+
+// after says whether stamp a is later than stamp b, failing the test on an unparsable stamp.
+func after(t *testing.T, a, b string) bool {
+	t.Helper()
+	ta, ok1 := pyfmt.ParseTime(a)
+	tb, ok2 := pyfmt.ParseTime(b)
+	if !ok1 || !ok2 {
+		t.Fatalf("unparsable stamps %q, %q", a, b)
+	}
+	return ta.After(tb)
 }
 
 // --- firings ---
