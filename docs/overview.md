@@ -427,6 +427,14 @@ The reconciler mirrors the HyperDX alert's `state` onto `status.state` every cyc
 `status.okSince` in the same patch: the time the alert last turned OK, kept while it stays OK and
 unset in any other state. It is for display ("OK for 13 min") and never closes anything.
 
+`status.stateSince` is the transition time of `status.state`, whatever the state: written when a
+pass reads a different state than the one last written (OK ↔ ALERT, → PENDING, → empty), and kept
+on every re-read of the same one. So "ALERT since 09:12" is when this firing began, while
+`status.stateObservedAt` is only the last read. For an OK alert it equals `okSince`. An Alert that
+was already ALERT or PENDING before the provider wrote the field has it empty until its next
+transition: the provider never saw that state begin and does not claim the upgrade time. Display
+only, like `okSince`.
+
 Every pass also writes what the Alert evaluates and whether its firings open incidents, both
 derived from the spec, the pause annotation and the namespace, so a reader of the CR needs no rule
 to tell them apart. `kubectl get alerts` shows both, as the `Type` and `Incidents` columns.

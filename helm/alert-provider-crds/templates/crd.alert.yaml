@@ -347,6 +347,15 @@ spec:
                     When the provider last read the live HyperDX state into state, set on every
                     pass that reads it. A provider that is down leaves Ready as it was; only this
                     stamp grows old.
+                stateSince:
+                  type: string
+                  format: date-time
+                  description: >
+                    When state last changed to its current value (a lastTransitionTime for state):
+                    it moves only when a read finds a different state, never on a re-read of the
+                    same one. Empty for an Alert that was already in its state, other than OK,
+                    before the provider wrote this field: that transition was never observed.
+                    Display-only.
                 okSince:
                   type: string
                   format: date-time

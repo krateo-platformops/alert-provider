@@ -534,6 +534,7 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 		e.plan.dashboardID = a.Status.HyperdxDashboardID
 	}
 	at := now()
+	a.Status.StateSince = StateSince(a.Status, st, at)
 	a.Status.OkSince = OkSince(a.Status, st, at)
 	a.Status.StateObservedAt = at
 	a.Status.HyperdxAlertID = e.plan.alertID
@@ -710,6 +711,7 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	st := pyfmt.Str(res["state"])
 	a.Status.HyperdxAlertID, a.Status.HyperdxDashboardID = pyfmt.Str(res["id"]), dash
 	at := now()
+	a.Status.StateSince = StateSince(a.Status, st, at)
 	a.Status.OkSince = OkSince(a.Status, st, at)
 	a.Status.StateObservedAt = at
 	// An empty error clears a refusal (an Alert created before its Metric) or an earlier failure:
