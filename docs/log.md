@@ -87,3 +87,6 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-11-14
 - Every Alert carries `status.stateSince`, the transition time of `status.state`: written when a pass reads a different state, kept on every re-read of the same one, so a reader can tell "ALERT for 3 minutes" from "ALERT for 3 days" (`stateObservedAt` is only the last read). An OK Alert's `stateSince` equals its `okSince`; one already ALERT or PENDING before the upgrade has it empty until its next transition, since that start was never observed. Asked for by the portal's /alerts overview.
+
+## 2026-11-15
+- `crdReaderGroups` (default `[]`): grants the listed groups `get` on the Alert CRD alone (`resourceNames`), which the portal's alert edit drawer reads with the user's token. A declared value instead of a hand-made rule, asked for 057's `sre` persona.

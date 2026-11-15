@@ -158,6 +158,21 @@ kubectl create rolebinding krateo-alert-viewer-devs -n krateo-system --clusterro
 A ClusterRoleBinding (`kubectl create clusterrolebinding … --clusterrole=krateo-alert-viewer`)
 grants it in every namespace.
 
+## Who can open the alert edit drawer
+
+The portal's alert edit drawer builds its form from the `Alert` CRD itself (RESTActions
+`alert-editdef` and `alert-formdef`), read with the signed-in user's token, so an editor also needs
+`get` on `customresourcedefinitions/alerts.observability.krateo.io`. The chart grants exactly that,
+by `resourceNames`, to the groups in `crdReaderGroups`:
+
+```yaml
+crdReaderGroups: [sre]
+```
+
+renders the ClusterRole `krateo-alert-crd-reader` (one rule: `get` on that single CRD) and a
+ClusterRoleBinding to those groups. Empty (the default) renders nothing. It is a cluster-scoped
+grant, so it is for operator groups; a tenant never receives one.
+
 ## Alerts in a tenant namespace
 
 An `Alert` may live in any namespace; the provider reconciles them all. Put a tenant's alerts in

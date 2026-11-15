@@ -194,6 +194,12 @@
         }
       }
     },
+    "crdReaderGroups": {
+      "type": "array",
+      "description": "Groups granted get on customresourcedefinitions/alerts.observability.krateo.io only (resourceNames). Empty renders nothing.",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
     "otel": {
       "type": "object",
       "title": "OpenTelemetry tracing",

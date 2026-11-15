@@ -80,3 +80,11 @@ otel:
   tracesSampler: parentbased_always_on
   # OTEL_SERVICE_NAME: service.name on every span.
   serviceName: krateo-alert-provider
+
+# Groups granted `get` on exactly one cluster-scoped object: the Alert CustomResourceDefinition
+# (customresourcedefinitions/alerts.observability.krateo.io, by resourceNames). The portal's alert
+# edit drawer reads the CRD with the signed-in user's own token to build its form (RESTActions
+# alert-editdef and alert-formdef); a group that edits Alerts without it sees a drawer that cannot
+# load. Empty (the default) renders nothing. For operator groups only (e.g. sre): a tenant never
+# receives a cluster-scoped grant.
+crdReaderGroups: []
