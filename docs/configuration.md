@@ -23,6 +23,7 @@ timestamp: 2026-08-20T00:00:00Z
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |
 | `config.reconcileInterval` | `60` | seconds between reconciler passes; each pass that finds an alert ALERT is one firing |
 | `crdReaderGroups` | `[]` | groups granted `get` on `customresourcedefinitions/alerts.observability.krateo.io` only (the alert edit drawer's read); empty renders nothing |
+| `alertPatcherGroups` | `[]` | groups granted `patch` on `alerts` in the release namespace only (Role + RoleBinding; approving a fix in the portal); empty renders nothing |
 | `otel.enabled` | `false` | export OpenTelemetry traces (see Tracing) |
 | `otel.tracesSampler` | `parentbased_always_on` | `OTEL_TRACES_SAMPLER` |
 | `otel.serviceName` | `krateo-alert-provider` | `OTEL_SERVICE_NAME`, the spans' `service.name` |

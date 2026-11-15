@@ -90,3 +90,4 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-11-15
 - `crdReaderGroups` (default `[]`): grants the listed groups `get` on the Alert CRD alone (`resourceNames`), which the portal's alert edit drawer reads with the user's token. A declared value instead of a hand-made rule, asked for 057's `sre` persona.
+- `alertPatcherGroups` (default `[]`): grants the listed groups `patch` on Alerts in the release namespace only (a Role, never a ClusterRole), which approving a remediation in the portal needs. Asked for 057's `sre` persona.

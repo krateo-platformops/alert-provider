@@ -173,6 +173,20 @@ renders the ClusterRole `krateo-alert-crd-reader` (one rule: `get` on that singl
 ClusterRoleBinding to those groups. Empty (the default) renders nothing. It is a cluster-scoped
 grant, so it is for operator groups; a tenant never receives one.
 
+## Who can approve a fix (patch Alerts)
+
+Approving a remediation in the portal patches the `Alert` with the signed-in user's token. The chart
+grants `patch` on `alerts.observability.krateo.io`, in the release namespace only, to the groups in
+`alertPatcherGroups`:
+
+```yaml
+alertPatcherGroups: [sre]
+```
+
+renders the Role `krateo-alert-patcher` (one rule: `patch` on `alerts`) and a RoleBinding to those
+groups, both in the release namespace. No `update`, `create` or `delete`, and never a ClusterRole:
+Alerts in tenant namespaces stay out of reach. Empty (the default) renders nothing.
+
 ## Alerts in a tenant namespace
 
 An `Alert` may live in any namespace; the provider reconciles them all. Put a tenant's alerts in
