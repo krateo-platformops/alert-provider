@@ -1,0 +1,31 @@
+{{- /*
+krateo-alert-crd-reader: `get` on the Alert CRD itself, and on nothing else (resourceNames). The
+portal's alert edit drawer reads the CRD with the signed-in user's token to build its form. Rendered
+only when crdReaderGroups lists a group; the binding names exactly those groups.
+*/ -}}
+{{- with .Values.crdReaderGroups }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: krateo-alert-crd-reader
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames: ["alerts.observability.krateo.io"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krateo-alert-crd-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: krateo-alert-crd-reader
+subjects:
+{{- range . }}
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: {{ . | quote }}
+{{- end }}
+{{- end }}
