@@ -200,6 +200,12 @@
       "uniqueItems": true,
       "items": {"type": "string", "minLength": 1}
     },
+    "alertPatcherGroups": {
+      "type": "array",
+      "description": "Groups granted patch on alerts.observability.krateo.io in the release namespace only (Role + RoleBinding). Empty renders nothing.",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
     "otel": {
       "type": "object",
       "title": "OpenTelemetry tracing",

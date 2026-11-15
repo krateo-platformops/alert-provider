@@ -88,3 +88,10 @@ otel:
 # load. Empty (the default) renders nothing. For operator groups only (e.g. sre): a tenant never
 # receives a cluster-scoped grant.
 crdReaderGroups: []
+
+# Groups granted `patch` on Alerts in this release's namespace (where the platform's Alerts live),
+# and nothing else: no update, create or delete, and no other namespace. Approving a remediation in
+# the portal patches the Alert with the signed-in user's own token, so an operator group that
+# approves fixes needs it. Empty (the default) renders nothing. A Role and RoleBinding, never a
+# ClusterRole: tenants' Alerts in their own namespaces stay out of reach.
+alertPatcherGroups: []
