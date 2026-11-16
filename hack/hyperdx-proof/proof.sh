@@ -1,6 +1,6 @@
 #!/bin/bash
-# Ratio alerts against a REAL HyperDX 2.35.0 (ClickStack 3.2.0, as the CMP ships it), on a
-# disposable kind cluster. alert-provider runs from its source tree (go run), its bootstrap
+# Ratio alerts against a REAL HyperDX (default 2.35.0 = ClickStack 3.2.0, as the CMP ships it), on a
+# disposable kind cluster: locally, or in CI (.github/workflows/hyperdx-proof.yaml, one leg per version). alert-provider runs from its source tree (go run), its bootstrap
 # provisions HyperDX's admin and keys exactly as the installer's Job does.
 #
 # Data: OTLP DELTA sums of traces.span.metrics.calls, posted through the real ClickHouse exporter,
@@ -14,7 +14,18 @@
 # Test values only; nothing is printed that authenticates.
 #
 #   hack/hyperdx-proof/proof.sh          (KEEP=1 keeps the kind cluster; WORK=dir keeps the run's files)
+#   Versions, through env (defaults = what the CMP ships today):
+#     CLICKSTACK_VERSION  the ClickStack chart release            [3.2.0]
+#     CLICKSTACK_SHA256   its release asset's sha256 (verified)   [the 3.2.0 digest]
+#     HYPERDX_IMAGE       the image the chart must render         [docker.hyperdx.io/hyperdx/hyperdx:2.35.0]
+#     KIND_NODE_IMAGE     the kind node (the CRDs need >= 1.36)   [kindest/node:v1.36.4]
 set -uo pipefail
+CLICKSTACK_VERSION=${CLICKSTACK_VERSION:-3.2.0}
+CLICKSTACK_SHA256=${CLICKSTACK_SHA256:-f92d4a22c950e672981c6caa8d106e63a71fc88441cdb054a7cfef13fa17be95}
+HYPERDX_IMAGE=${HYPERDX_IMAGE:-docker.hyperdx.io/hyperdx/hyperdx:2.35.0}
+KIND_NODE_IMAGE=${KIND_NODE_IMAGE:-kindest/node:v1.36.4}
+# sha256 on macOS (shasum) and Linux CI (sha256sum).
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 P=$(cd "$(dirname "$0")" && pwd)
 AP=$(cd "$P/../.." && pwd)
 W=${WORK:-$(mktemp -d)}; mkdir -p $W; echo "work dir: $W"
@@ -26,23 +37,24 @@ PIDS=(); cleanup() { for p in "${PIDS[@]:-}"; do kill $p 2>/dev/null; done; }; t
 
 echo "== cluster ($(ts))"
 if kind get clusters | grep -qx hdx-proof; then kind export kubeconfig --name hdx-proof --kubeconfig $KC >/dev/null 2>&1
-else kind create cluster --name hdx-proof --image kindest/node:v1.36.4 --kubeconfig $KC --wait 300s >/dev/null 2>&1 || { echo "kind create failed"; exit 2; }; fi
+else kind create cluster --name hdx-proof --image "$KIND_NODE_IMAGE" --kubeconfig $KC --wait 300s >/dev/null 2>&1 || { echo "kind create failed"; exit 2; }; fi
 [ "$(k config current-context)" = kind-hdx-proof ] || { echo "wrong context"; exit 2; }
 
 echo "== data stack ($(ts))"
 k apply -f $P/stack.yaml >/dev/null
 k -n $NS rollout status deploy/clickhouse deploy/mongo deploy/otel-collector --timeout 900s >/dev/null || { echo "stack not ready"; exit 2; }
 
-echo "== HyperDX 2.35.0 ($(ts))"
-# ClickStack 3.2.0 is the chart krateo-observability wraps; pinned by digest.
-CS_SHA=f92d4a22c950e672981c6caa8d106e63a71fc88441cdb054a7cfef13fa17be95
-curl -sfL -o $W/clickstack-3.2.0.tgz https://github.com/ClickHouse/ClickStack-helm-charts/releases/download/clickstack-3.2.0/clickstack-3.2.0.tgz
-[ "$(shasum -a 256 $W/clickstack-3.2.0.tgz | cut -d' ' -f1)" = "$CS_SHA" ] || { echo "clickstack chart digest mismatch"; exit 2; }
-rm -rf $W/charts && mkdir -p $W/charts && tar xzf $W/clickstack-3.2.0.tgz -C $W/charts
+echo "== HyperDX ${HYPERDX_IMAGE##*:} (ClickStack $CLICKSTACK_VERSION) ($(ts))"
+# The ClickStack chart krateo-observability wraps, pinned by digest.
+CS_TGZ=$W/clickstack-$CLICKSTACK_VERSION.tgz
+curl -sfL -o $CS_TGZ "https://github.com/ClickHouse/ClickStack-helm-charts/releases/download/clickstack-$CLICKSTACK_VERSION/clickstack-$CLICKSTACK_VERSION.tgz" \
+  || { echo "clickstack $CLICKSTACK_VERSION download failed"; exit 2; }
+[ "$(sha256 $CS_TGZ)" = "$CLICKSTACK_SHA256" ] || { echo "clickstack chart digest mismatch"; exit 2; }
+rm -rf $W/charts && mkdir -p $W/charts && tar xzf $CS_TGZ -C $W/charts
 helm --kubeconfig $KC upgrade --install hdx $W/charts/clickstack -n $NS -f $P/clickstack-values.yaml --wait --timeout 20m >/dev/null \
   || { echo "HyperDX not ready"; k -n $NS get pods; exit 2; }
 img=$(k -n $NS get deploy hdx-clickstack-app -o jsonpath='{.spec.template.spec.containers[0].image}')
-[ "$img" = "docker.hyperdx.io/hyperdx/hyperdx:2.35.0" ] && pass "HyperDX image is $img (the CMP's)" || fail "HyperDX image $img"
+[ "$img" = "$HYPERDX_IMAGE" ] && pass "HyperDX image is $img (expected for ClickStack $CLICKSTACK_VERSION)" || fail "HyperDX image $img, expected $HYPERDX_IMAGE"
 
 echo "== CRDs ($(ts))"
 rm -rf $W/.crds && cp -R $AP/helm/alert-provider-crds $W/.crds

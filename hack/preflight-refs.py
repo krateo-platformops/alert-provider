@@ -12,7 +12,7 @@ values. Matching text finds them all.
 
 Exit 1 if any reference is unresolvable.
 """
-import base64, json, os, re, sys, urllib.error, urllib.request
+import base64, json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
 TIMEOUT = 25
 
@@ -74,14 +74,47 @@ def registry_get(host, repo, ref):
         "application/vnd.docker.distribution.manifest.v2+json",
         "application/vnd.docker.distribution.manifest.list.v2+json",
     ])
-    req = urllib.request.Request("%s/%s/manifests/%s" % (base, repo, ref), headers=hdrs)
+    url = "%s/%s/manifests/%s" % (base, repo, ref)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=hdrs), timeout=TIMEOUT) as r:
             return r.status
     except urllib.error.HTTPError as e:
-        return e.code
+        # A registry fronting another one (docker.hyperdx.io -> Docker Hub) answers 401 with the
+        # standard Bearer challenge. Follow it ANONYMOUSLY, once: still no credentials, so a
+        # private image keeps failing exactly as before, and a public one stops crying wolf.
+        tok = anonymous_token(e.headers.get("WWW-Authenticate", "")) if e.code == 401 else ""
+        if not tok:
+            return e.code
+        hdrs["Authorization"] = "Bearer " + tok
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=hdrs), timeout=TIMEOUT) as r:
+                return r.status
+        except urllib.error.HTTPError as e2:
+            return e2.code
+        except Exception:
+            return 0
     except Exception:
         return 0
+
+
+CHALLENGE = re.compile(r'(\w+)="([^"]*)"')
+
+
+def anonymous_token(www_authenticate):
+    """An anonymous pull token from a registry's Bearer challenge, or "" if there is none."""
+    if not www_authenticate.lower().startswith("bearer "):
+        return ""
+    p = dict(CHALLENGE.findall(www_authenticate))
+    realm = p.get("realm", "")
+    if not realm.startswith("https://"):
+        return ""
+    q = urllib.parse.urlencode({k: p[k] for k in ("service", "scope") if k in p})
+    try:
+        with urllib.request.urlopen(realm + ("?" + q if q else ""), timeout=TIMEOUT) as r:
+            d = json.load(r)
+            return d.get("token") or d.get("access_token") or ""
+    except Exception:
+        return ""
 
 
 NAME_NEAR = re.compile(r'^\s*(?:chart|name):\s*"?([a-z0-9][a-z0-9._-]*)"?\s*$')

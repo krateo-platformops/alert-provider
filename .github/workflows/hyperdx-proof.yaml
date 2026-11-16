@@ -1,0 +1,104 @@
+name: hyperdx-proof
+
+# hack/hyperdx-proof against a REAL HyperDX, one leg per ClickStack chart version, on a disposable
+# kind cluster in the runner. Cluster tests run here (or on disposable GKE), never on a laptop.
+# The 3.2.0 leg (HyperDX 2.35.0, what the CMP ships today) is the positive control for the other.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - hack/hyperdx-proof/**
+      - internal/hyperdx/**
+      - .github/workflows/hyperdx-proof.yaml
+  workflow_dispatch:
+    inputs:
+      clickstack_version:
+        description: "ClickStack chart release (e.g. 3.5.0). Empty runs the matrix."
+        required: false
+        default: ""
+      clickstack_sha256:
+        description: "sha256 of the clickstack-<version>.tgz release asset"
+        required: false
+        default: ""
+      hyperdx_image:
+        description: "HyperDX image the chart must render (e.g. docker.hyperdx.io/hyperdx/hyperdx:2.39.1)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.legs.outputs.legs }}
+    steps:
+      - id: legs
+        env:
+          CV: ${{ inputs.clickstack_version }}
+          CS: ${{ inputs.clickstack_sha256 }}
+          HI: ${{ inputs.hyperdx_image }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CV:-}" ]; then
+            [ -n "${CS:-}" ] && [ -n "${HI:-}" ] || { echo "::error::clickstack_version needs clickstack_sha256 and hyperdx_image"; exit 1; }
+            jq -cn --arg v "$CV" --arg s "$CS" --arg i "$HI" '[{clickstack: $v, sha256: $s, image: $i}]' > legs.json
+          else
+            # 3.2.0 / 2.35.0: what krateo-observability ships today (positive control).
+            # 3.5.0 / 2.39.1: krateo-observability 0.1.49 (observability#184). Digest = GitHub's
+            # published one, equal to the tgz vendored on #184's branch.
+            jq -cn '[
+              {clickstack: "3.2.0", sha256: "f92d4a22c950e672981c6caa8d106e63a71fc88441cdb054a7cfef13fa17be95", image: "docker.hyperdx.io/hyperdx/hyperdx:2.35.0"},
+              {clickstack: "3.5.0", sha256: "a8a781cf8fb0c272351c39daf01ced7db85769eacd6f92fc18897b85f451513a", image: "docker.hyperdx.io/hyperdx/hyperdx:2.39.1"}
+            ]' > legs.json
+          fi
+          echo "legs=$(cat legs.json)" >> "$GITHUB_OUTPUT"
+
+  proof:
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.matrix.outputs.legs) }}
+    name: proof (ClickStack ${{ matrix.leg.clickstack }})
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@v5.0.0
+        with:
+          version: v3.19.0
+      - name: kind v0.33.0 (the first release with kindest/node v1.36.4), verified
+        run: |
+          set -euo pipefail
+          base=https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0
+          curl -fsSLo kind "$base/kind-linux-amd64"
+          curl -fsSLo kind.sha256sum "$base/kind-linux-amd64.sha256sum"
+          [ "$(sha256sum kind | cut -d' ' -f1)" = "$(cut -d' ' -f1 kind.sha256sum)" ] || { echo "::error::kind digest mismatch"; exit 1; }
+          chmod +x kind && sudo mv kind /usr/local/bin/kind && kind version
+      - name: hack/hyperdx-proof (ClickStack ${{ matrix.leg.clickstack }}, ${{ matrix.leg.image }})
+        env:
+          CLICKSTACK_VERSION: ${{ matrix.leg.clickstack }}
+          CLICKSTACK_SHA256: ${{ matrix.leg.sha256 }}
+          HYPERDX_IMAGE: ${{ matrix.leg.image }}
+          # The digest kind v0.33.0 publishes for this node, so the leg can't drift.
+          KIND_NODE_IMAGE: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+          WORK: ${{ runner.temp }}/hyperdx-proof
+        run: hack/hyperdx-proof/proof.sh 2>&1 | tee "${{ runner.temp }}/proof.log"; exit "${PIPESTATUS[0]}"
+      - name: Keep the run's files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyperdx-proof-clickstack-${{ matrix.leg.clickstack }}
+          # The proof's output and alert-provider's log only. The work dir also holds the kind
+          # kubeconfig and the downloaded charts: never upload a credential, even a throwaway one.
+          path: |
+            ${{ runner.temp }}/proof.log
+            ${{ runner.temp }}/hyperdx-proof/alert-provider.log
+          if-no-files-found: warn
