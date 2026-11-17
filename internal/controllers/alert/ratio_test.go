@@ -10,7 +10,7 @@ import (
 	"github.com/krateo-platformops/alert-provider/internal/hyperdx/hyperdxtest"
 )
 
-// The failing share of API requests: the CMP's X5 error-ratio SLO, from the collector's span
+// The failing share of API requests: an API error-ratio SLO, from the collector's span
 // metrics (krateo-observability otel-collector-daemonset 0.1.15).
 const sloAlert = "slo-api-error-ratio"
 

@@ -55,4 +55,8 @@ image: ## build the image
 	docker build -t $(IMAGE):$(VERSION) .
 
 .PHONY: check
-check: build lint test test-integration check-generate lint-charts ## everything CI runs
+check: build lint test test-integration check-generate lint-charts check-public-text ## everything CI runs
+
+.PHONY: check-public-text
+check-public-text: ## fail on internal planning ids or private-repo references (public repository)
+	hack/check-public-text.sh

@@ -191,10 +191,10 @@ state() { k -n $NS get alerts.observability.krateo.io $1 -o jsonpath='{.status.s
 phase() { k -n $NS get alerts.observability.krateo.io $1 -o jsonpath='{.status.phase}' 2>/dev/null; }
 
 echo "== waiting for HyperDX to evaluate (up to 15 min) ($(ts))"
-T0=$(date +%s); prev=""
-while [ $(( $(date +%s) - T0 )) -lt 900 ]; do
+START=$(date +%s); prev=""
+while [ $(( $(date +%s) - START )) -lt 900 ]; do
   line="fires-sum=$(state ratio-fires-sum)/$(phase ratio-fires-sum) fires-increase=$(state ratio-fires-increase) ok=$(state ratio-ok) idle=$(state ratio-idle)"
-  [ "$line" != "$prev" ] && { echo "+$(( $(date +%s)-T0 ))s $line"; prev="$line"; }
+  [ "$line" != "$prev" ] && { echo "+$(( $(date +%s)-START ))s $line"; prev="$line"; }
   [ "$(state ratio-fires-sum)" = ALERT ] && [ "$(state ratio-fires-increase)" = ALERT ] && [ "$(state ratio-between-fires)" = ALERT ] && break
   sleep 15
 done
