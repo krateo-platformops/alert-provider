@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -179,7 +180,12 @@ func run(log logging.Logger) error {
 
 	comparer := &incident.Comparer{Reader: mgr.GetAPIReader(), Namespace: namespace, ModelConfig: compareModelConfig,
 		Timeout: compareTimeout, JWT: jwt.Get}
-	writer := incident.NewWriter(writerConfig, incident.NewKube(mgr.GetAPIReader(), mgr.GetClient()), a2a, comparer, log)
+	disc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("cannot create the discovery client: %w", err)
+	}
+	writer := incident.NewWriter(writerConfig, incident.NewKube(mgr.GetAPIReader(), mgr.GetClient()), a2a, comparer, log).
+		WithDiscovery(incident.NewDiscovery(disc, 5*time.Minute, log))
 
 	ctx := ctrl.SetupSignalHandler()
 	// Before any firing can open an incident, so only incidents a previous process left are swept.

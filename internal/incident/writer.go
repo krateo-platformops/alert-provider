@@ -162,6 +162,9 @@ type Writer struct {
 	sleep func(ctx context.Context, d time.Duration) bool
 	spawn func(func())
 
+	// discovery is the cluster's API discovery for scriptcheck.Unserved; nil judges nothing.
+	discovery *Discovery
+
 	slots    chan struct{}
 	mu       sync.Mutex
 	firing   map[string]bool    // namespace/alert pairs with an evaluation in progress
@@ -202,6 +205,13 @@ func newWriter(cfg Config, kube Kube,
 		slots:    make(chan struct{}, cfg.MaxConcurrentAnalyses),
 		firing:   map[string]bool{},
 		verdicts: map[string]verdict{}}
+}
+
+// WithDiscovery has w refuse checks that read resources the cluster does not serve (see
+// scriptcheck.Unserved), judged against d.
+func (w *Writer) WithDiscovery(d *Discovery) *Writer {
+	w.discovery = d
+	return w
 }
 
 // IncidentName is <alert>-<yyyymmdd-hhmmss> of the opening firing, in UTC.
@@ -1043,7 +1053,7 @@ func (w *Writer) analysis(ctx context.Context, ns, name, prompt, contextID strin
 	}
 	log := logging.WithContext(w.log, ctx)
 	log.Info(fmt.Sprintf("[a2a] %s/%s: %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
-	r := evaluate(raw, ledger)
+	r := evaluate(raw, ledger, w.discovery.Get(ctx))
 	logCoerced(log, ns, name, r)
 	r.contextID, r.ledger = contextID, ledger
 	return r
@@ -1063,7 +1073,7 @@ func (w *Writer) correction(ctx context.Context, ns, name string, first result) 
 	} else {
 		log.Info(fmt.Sprintf("[a2a] %s/%s: correction, %d chars, %d tool results", ns, name, pyfmt.Len(raw), len(ledger)))
 		// The corrected block describes the same investigation: the first turn's reads count too.
-		r := evaluate(raw, append(append([]report.ToolResult{}, first.ledger...), ledger...))
+		r := evaluate(raw, append(append([]report.ToolResult{}, first.ledger...), ledger...), w.discovery.Get(ctx))
 		logCoerced(log, ns, name, r)
 		if r.st["howToFix"] != nil {
 			r.contextID, r.ledger = first.contextID, append(first.ledger, ledger...)
@@ -1082,15 +1092,18 @@ func (w *Writer) correction(ctx context.Context, ns, name string, first result) 
 // alone, as the parser leaves out an unusable one. Otherwise error says why there are none, and
 // correct holds what a correction turn would fix: not for an empty answer or a model error, which
 // are transient, nor for a structured block without any howToFix, which the agent chose.
-func evaluate(raw string, ledger []report.ToolResult) result {
+//
+// served is the cluster's API discovery: checks naming a resource it proves unserved are problems
+// too (scriptcheck.Unserved). nil judges none.
+func evaluate(raw string, ledger []report.ToolResult, served *scriptcheck.Discovery) result {
 	prose, v2, fixProblems, coerced := report.ParseFix(raw, ledger)
-	r := parsed(prose, v2, fixProblems)
+	r := parsed(prose, v2, fixProblems, served)
 	r.coerced = coerced
 	return r
 }
 
 // parsed is evaluate of an answer report.ParseFix has parsed.
-func parsed(prose string, v2 map[string]any, fixProblems []string) result {
+func parsed(prose string, v2 map[string]any, fixProblems []string, served *scriptcheck.Discovery) result {
 	st := map[string]any{}
 	if pyfmt.Strip(prose) != "" {
 		st["report"] = prose
@@ -1103,7 +1116,7 @@ func parsed(prose string, v2 map[string]any, fixProblems []string) result {
 	fix, hasFix := v2["howToFix"].(map[string]any)
 	switch {
 	case hasFix:
-		return refuse(st, fix, scriptcheck.Check(fix))
+		return refuse(st, fix, append(scriptcheck.Check(fix), scriptcheck.Unserved(fix, served)...))
 	case pyfmt.Strip(prose) == "" && len(v2) == 0:
 		st["error"] = "The analysis returned no output."
 		return result{st: st, transient: "the answer was empty"}
