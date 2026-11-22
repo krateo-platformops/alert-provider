@@ -12,6 +12,7 @@ package incident
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -733,7 +734,7 @@ func (w *Writer) finish(ctx context.Context, ns, name string, st map[string]any,
 // closed the incident. A refused close falls back to Open with the error, as before failed analyses
 // were closed: the next incident of the alert supersedes and closes it.
 //
-// An automatic reanalysis (status.reanalysis.cause ApplyActionStale, which incident-provider filed
+// An automatic reanalysis (status.reanalysis.cause ApplyActionStale or CheckNoVerdict, which incident-provider filed
 // on an Open incident) is never closed, whatever its failure: an automatic action never ends an
 // open incident. It goes back to Open with the error and status.reanalysis as written, so a person
 // can ask for a reanalysis again. transient picks the error: the analysis never got an answer (the
@@ -798,14 +799,14 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 }
 
 // automaticReanalysis says the incident's current analysis answers a reanalysis incident-provider
-// filed itself (status.reanalysis.cause ApplyActionStale), not a person.
+// filed itself (status.reanalysis.cause ApplyActionStale or CheckNoVerdict), not a person.
 func automaticReanalysis(incident map[string]any) bool {
 	re, ok := status(incident)["reanalysis"].(map[string]any)
 	if !ok {
 		return false
 	}
 	cause, _ := reanalysisCause(re)
-	return cause == CauseApplyActionStale
+	return slices.Contains(automaticCauses, cause)
 }
 
 // automaticFailure is the status.error of an automatic reanalysis that failed: why, after

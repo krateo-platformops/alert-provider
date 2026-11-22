@@ -163,13 +163,20 @@ func withoutCondition(conds any, t string) ([]any, bool) {
 }
 
 // A reanalysis request's cause: a person (the portal's Re-run analysis; also when absent), or
-// incident-provider when the cluster stops serving what the applyAction targets.
+// incident-provider: when the cluster stops serving what the applyAction targets
+// (ApplyActionStale), or when a check's first run gave no verdict (CheckNoVerdict: exit 2, its
+// output in the request's feedback).
 const (
 	CausePerson           = "Person"
 	CauseApplyActionStale = "ApplyActionStale"
+	CauseCheckNoVerdict   = "CheckNoVerdict"
 )
 
-var causes = []string{CausePerson, CauseApplyActionStale}
+var causes = []string{CausePerson, CauseApplyActionStale, CauseCheckNoVerdict}
+
+// automaticCauses are the causes incident-provider files itself: an automatic action never ends
+// an open incident (see giveUp).
+var automaticCauses = []string{CauseApplyActionStale, CauseCheckNoVerdict}
 
 // reanalysisCause is a request's cause, Person when it has none; false when it has one outside
 // causes, which is taken as Person.
@@ -200,11 +207,17 @@ func ReanalysisPrompt(original string, incident map[string]any, feedback, cause 
 	b.WriteString(base)
 	b.WriteString("\n\n## This is a reanalysis\n\n")
 	feedbackTitle := "What the person found wrong with the previous analysis:"
-	if cause == CauseApplyActionStale {
+	switch cause {
+	case CauseApplyActionStale:
 		b.WriteString("The previous fix can no longer be applied: its applyAction targets a version this cluster no longer " +
 			"serves. Re-resolve the fix against the served version. The previous analysis is below.")
 		feedbackTitle = "Why the analysis is requested again:"
-	} else {
+	case CauseCheckNoVerdict:
+		b.WriteString("A check of the previous analysis gave no verdict on its first run: it exited 2, so the incident " +
+			"controller can never tell whether the problem holds or the fix worked. The previous analysis is below, " +
+			"with what that run printed. Write checks that run against this cluster and answer 0 or 1.")
+		feedbackTitle = "Why the analysis is requested again:"
+	default:
 		b.WriteString("A person asked for a new analysis of this incident. The previous one is below; it may be wrong.")
 	}
 	b.WriteString(" Diagnose again from the live cluster rather than restating it, and write scripts that run. " +
