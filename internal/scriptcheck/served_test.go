@@ -43,7 +43,7 @@ func TestUnservedRefusesAnInventedGroup(t *testing.T) {
 		if p.Script != script || p.Rule != UnservedGroup || p.Line != 3 {
 			t.Errorf("problem %d = %+v, want %s line 3 %s", i, p, script, UnservedGroup)
 		}
-		for _, want := range []string{"customresourcedefinitions.apiextensions.krateo.io", `"apiextensions.krateo.io"`,
+		for _, want := range []string{"customresourcedefinitions.apiextensions.krateo.io", "`apiextensions.krateo.io`",
 			"customresourcedefinitions.apiextensions.k8s.io"} {
 			if !strings.Contains(p.Detail, want) {
 				t.Errorf("problem %d detail lacks %q: %s", i, want, p.Detail)
