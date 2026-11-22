@@ -228,3 +228,25 @@ func TestAReanalysisRecordsTheRequestBeforeRemovingIt(t *testing.T) {
 		t.Errorf("status.reanalysis written at call %d, spec.reanalysis removed at call %d", recorded, removed)
 	}
 }
+
+// incident-provider's CheckNoVerdict request: the prompt says a check gave no verdict on its first
+// run, titles the feedback (the script, its exit and output) as the controller's reason, and keeps
+// the previous analysis, as for ApplyActionStale.
+// MUTATION: dropping the CheckNoVerdict case (it falls back to the person's wording) fails this.
+func TestAReanalysisPromptSaysACheckGaveNoVerdict(t *testing.T) {
+	feedback := "verify: exit 2: jq: error (at <stdin>:136): Cannot index string with string \"spec\""
+	got := ReanalysisPrompt("BASE PROMPT"+report.Instructions, promptIncident(t, nil), feedback, CauseCheckNoVerdict)
+	want := "BASE PROMPT" +
+		"\n\n## This is a reanalysis\n\nA check of the previous analysis gave no verdict on its first run: it exited 2, " +
+		"so the incident controller can never tell whether the problem holds or the fix worked. The previous analysis " +
+		"is below, with what that run printed. Write checks that run against this cluster and answer 0 or 1." +
+		" Diagnose again from the live cluster rather than restating it, and write scripts that run. " +
+		"A script whose last run gave no verdict (an exit other than 0 or 1) is broken: its output says why." +
+		"\n\nWhy the analysis is requested again:\n\n```text\n" + feedback + "\n```"
+	if !strings.HasPrefix(got, want) {
+		t.Errorf("prompt head\n got %q\nwant %q", got[:min(len(got), len(want)+40)], want)
+	}
+	if !strings.Contains(got, "\n\nPrevious verify script:") || !strings.HasSuffix(got, report.Instructions) {
+		t.Error("the previous analysis or the output instructions are missing")
+	}
+}

@@ -3,6 +3,7 @@ package incident
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,9 @@ func wantKeptOpenWith(t *testing.T, c *writerCase, name, prefix, why string) {
 		t.Errorf("error %q, want %q…%q", e, prefix, why)
 	}
 	re, _ := s["reanalysis"].(map[string]any)
-	eq(t, "reanalysis cause", re["cause"], CauseApplyActionStale)
+	if cause, _ := re["cause"].(string); !slices.Contains(automaticCauses, cause) {
+		t.Errorf("reanalysis cause %v, want one of %v", re["cause"], automaticCauses)
+	}
 	if s["completedAt"] == nil {
 		t.Error("no completedAt")
 	}
@@ -167,4 +170,18 @@ func TestAnAutomaticReanalysisWithoutAUsableFixGoesBackToOpen(t *testing.T) {
 			wantClosedAsFailed(t, p, incName)
 		})
 	}
+}
+
+// CheckNoVerdict is incident-provider's too: interrupted past its recoveries, it goes back to Open
+// with the error, as ApplyActionStale does, while a person's is closed.
+// MUTATION: dropping CheckNoVerdict from automaticCauses fails this.
+func TestARestartGivesUpOnAnInterruptedNoVerdictReanalysisByItsCause(t *testing.T) {
+	c := newCase(t)
+	c.w.spawn = func(f func()) { f() }
+	c.interruptedReanalysis("noverdict-1", CauseCheckNoVerdict, "1")
+	c.interruptedReanalysis("person-1", CausePerson, "1")
+	c.w.RecoverInterrupted(context.Background())
+	eq(t, "rca calls", len(c.rca), 0)
+	wantKeptOpen(t, c, "noverdict-1", "the alert-provider restarted before it finished")
+	wantClosedAsFailed(t, c, "person-1")
 }
