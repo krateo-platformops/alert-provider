@@ -190,7 +190,7 @@ func TestAReanalysisRecordsItsCause(t *testing.T) {
 			defer wc.log.mu.Unlock()
 			logged := false
 			for _, l := range wc.log.lines {
-				logged = logged || strings.Contains(l, "spec.reanalysis.cause 'Robot' is not one of Person, ApplyActionStale, taken as Person")
+				logged = logged || strings.Contains(l, "spec.reanalysis.cause 'Robot' is not one of Person, ApplyActionStale, CheckNoVerdict, taken as Person")
 			}
 			eq(t, "unknown cause logged", logged, c.logUnknown)
 		})
