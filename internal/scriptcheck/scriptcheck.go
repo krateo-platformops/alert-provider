@@ -1,7 +1,7 @@
 // Package scriptcheck checks the howToFix scripts of an analysis before the writer stores them. A
 // script that cannot run is worse than none: the incident controller runs precondition and verify
 // every poll interval, an unknown result changes nothing, and the incident sits with a check that
-// never answers. Four rules, each a failure seen on a live cluster:
+// never answers. Four rules here, and UnservedGroup (served.go, which needs the cluster's API discovery), each a failure seen on a live cluster:
 //
 //   - BashSyntax: bash parses the script. The parser is mvdan.cc/sh's bash dialect, in process:
 //     the image is distroless and has no bash, and nothing the model wrote is ever executed here.
