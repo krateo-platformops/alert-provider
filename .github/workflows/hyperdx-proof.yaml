@@ -93,7 +93,7 @@ jobs:
         run: hack/hyperdx-proof/proof.sh 2>&1 | tee "${{ runner.temp }}/proof.log"; exit "${PIPESTATUS[0]}"
       - name: Keep the run's files
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hyperdx-proof-clickstack-${{ matrix.leg.clickstack }}
           # The proof's output and alert-provider's log only. The work dir also holds the kind
