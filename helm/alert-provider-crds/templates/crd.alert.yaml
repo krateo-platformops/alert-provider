@@ -119,9 +119,11 @@ spec:
                   description: >
                     ClickHouse SQL boolean expression over the rows of source counted by the alert
                     (empty = all rows). The controller pins whereLanguage:"sql" on the tile, and the
-                    expression reaches the query's WHERE clause verbatim. In the logs source,
-                    severity travels in the text rather than in a severity column, so predicates
-                    read off Body and, for Kubernetes events, the JSON inside it — e.g.
+                    expression reaches the query's WHERE clause verbatim. In the logs source, on a
+                    collector that promotes levels, JSON log lines carry theirs in SeverityText and
+                    SeverityNumber (SeverityNumber >= 17 is error and above); plain-text lines and
+                    Kubernetes events carry neither, so for those predicates read off Body and, for
+                    Kubernetes events, the JSON inside it — e.g.
                     ResourceAttributes['telemetry.source'] = 'k8s-events' AND
                     JSONExtractString(Body, 'object', 'reason') = 'BackOff'. In the traces source,
                     predicates read the span — e.g. ServiceName = 'snowplow' AND StatusCode =
