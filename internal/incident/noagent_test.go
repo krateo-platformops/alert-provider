@@ -89,10 +89,13 @@ func TestOpeningForAPersonSurvivesAConcurrentWrite(t *testing.T) {
 	}
 	wantUnavailable(t, inc, "True", ReasonNoAgent)
 
-	c = newCaseNoAgent(t)
-	c.kube.beforePatch = func(ns, name string) { c.kube.writeStatus(ns, name, map[string]any{"state": "Closed"}) }
-	c.firePlain()
-	eq(t, "state", st(c.kube.only(ns))["state"], "Closed")
+	// Closed is final in the CRD; from Verifying the apiserver would accept the write.
+	for _, moved := range []string{"Closed", "Verifying"} {
+		c := newCaseNoAgent(t)
+		c.kube.beforePatch = func(ns, name string) { c.kube.writeStatus(ns, name, map[string]any{"state": moved}) }
+		c.firePlain()
+		eq(t, "state", st(c.kube.only(ns))["state"], moved)
+	}
 }
 
 func TestWithNoAgentAnAlertLabelledForAPersonKeepsItsOwnReason(t *testing.T) {
