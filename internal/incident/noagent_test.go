@@ -63,6 +63,36 @@ func TestWithNoAgentAFailedAnalysisDoesNotHoldTheFiring(t *testing.T) {
 	c.firePlain()
 	eq(t, "incidents", len(c.kube.incidents), 2)
 	eq(t, "superseded", annotations(c.kube.get(ns, "f-1"))[AnnotationSupersededBy], nil)
+	for k, inc := range c.kube.incidents {
+		if v := annotations(inc)[AnnotationSupersedesFailed]; v != nil {
+			t.Fatalf("%s names the failed analyses %v", k, v)
+		}
+	}
+}
+
+// The incident controller writes between the read and the write: the write is retried on what it
+// wrote, and a person's close in between is left alone.
+func TestOpeningForAPersonSurvivesAConcurrentWrite(t *testing.T) {
+	c := newCaseNoAgent(t)
+	once := true
+	c.kube.beforePatch = func(ns, name string) {
+		if once {
+			once = false
+			c.kube.writeStatus(ns, name, map[string]any{"conditions": []any{synced}})
+		}
+	}
+	c.firePlain()
+	inc := c.kube.only(ns)
+	eq(t, "state", st(inc)["state"], "Open")
+	if _, ok := condition(st(inc), "Synced"); !ok {
+		t.Fatal("Synced is gone")
+	}
+	wantUnavailable(t, inc, "True", ReasonNoAgent)
+
+	c = newCaseNoAgent(t)
+	c.kube.beforePatch = func(ns, name string) { c.kube.writeStatus(ns, name, map[string]any{"state": "Closed"}) }
+	c.firePlain()
+	eq(t, "state", st(c.kube.only(ns))["state"], "Closed")
 }
 
 func TestWithNoAgentAnAlertLabelledForAPersonKeepsItsOwnReason(t *testing.T) {
