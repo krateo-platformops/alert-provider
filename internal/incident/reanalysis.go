@@ -35,7 +35,10 @@ func spec(obj map[string]any) map[string]any {
 // results cleared and the request recorded in status.reanalysis; then spec.reanalysis is removed
 // and the RCA runs again under run, off the caller. Its prompt carries the previous analysis, its
 // check results and the request's feedback. In any other state the request is removed unanswered:
-// an Analyzing incident is already being analyzed, and a Resolved or Closed one is over.
+// an Analyzing incident is already being analyzed, and a Resolved or Closed one is over. With no
+// agent (Config.NoAgent) every request is removed unanswered, and the previous analysis stays:
+// clearing it for a call nobody answers would lose it. incident-provider does not mirror that, and
+// its own requests are bounded per incident (StaleReanalysisBudget, NoVerdictReanalysisBudget).
 //
 // Its span is incident.reanalyze; the RCA it starts is incident.analyze, a new trace linked to it
 // (tracing.Detach) that runs under run, so it outlives the reconcile and stops with run.
@@ -62,12 +65,16 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 			return nil
 		}
 		// The drop rule; incident-provider's writerAnswers mirrors it (see answers).
-		if !answers(incident) {
+		if w.cfg.NoAgent || !answers(incident) {
 			if err := w.dropRequest(ctx, ns, name); err != nil {
 				return err
 			}
 			s, _ := state(incident)
-			log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis not run (state %s)", ns, name, s))
+			why := "state " + s
+			if w.cfg.NoAgent {
+				why = "no analysis agent"
+			}
+			log.Info(fmt.Sprintf("[incident] %s/%s: reanalysis not run (%s)", ns, name, why))
 			return nil
 		}
 

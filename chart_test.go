@@ -252,3 +252,26 @@ func TestTheSchemaRefusesNoConcurrentRCAs(t *testing.T) {
 		}
 	}
 }
+
+// An empty URL must reach the container as a variable that is set, or the binary takes its default.
+func TestAnEmptyAgentURLReachesTheDeploymentAsSetAndEmpty(t *testing.T) {
+	for _, args := range [][]string{nil, {"--set-string", "config.autopilotA2aUrl="}} {
+		want := "http://incident-agent.krateo-system.svc:8080/"
+		if args != nil {
+			want = ""
+		}
+		dep, _ := render(t, args...)
+		found := false
+		for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+			if e.Name == "AUTOPILOT_A2A_URL" {
+				found = true
+				if e.Value != want || e.ValueFrom != nil {
+					t.Fatalf("%v: %q, want %q", args, e.Value, want)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%v: AUTOPILOT_A2A_URL is not set", args)
+		}
+	}
+}

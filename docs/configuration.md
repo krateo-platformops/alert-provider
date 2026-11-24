@@ -12,7 +12,7 @@ timestamp: 2026-08-20T00:00:00Z
 |---|---|---|
 | `image.repository` | `ghcr.io/krateo-platformops/alert-provider` | controller image |
 | `image.tag` | chart appVersion | image tag; pin to override |
-| `config.autopilotA2aUrl` | `http://incident-agent.krateo-system.svc:8080/` | the RCA agent's A2A endpoint |
+| `config.autopilotA2aUrl` | `http://incident-agent.krateo-system.svc:8080/` | the RCA agent's A2A endpoint; empty: there is no agent, so each alert has at most one open incident, for a person, and nothing is analysed |
 | `config.compareModelConfig` | `gemini-flash` | the kagent ModelConfig whose model names the open incident that covers a firing; provider OpenAI or Gemini |
 | `config.maxCompareCandidates` | `50` | how many of an alert's newest open, analyzed incidents one comparison weighs |
 | `config.incidentCoverWindow` | `24h` | Go duration an open, analyzed incident stays a comparison candidate after it opened or last covered a firing; past it, a firing it would have covered opens a new incident with a fresh RCA. `"0"` disables it |
