@@ -74,3 +74,20 @@ func TestTheCoverWindowIsAGoDuration(t *testing.T) {
 		t.Errorf("1h = %s", d)
 	}
 }
+
+func TestOnlyASetAndEmptyAgentURLMeansNoAgent(t *testing.T) {
+	const def = "http://incident-agent.krateo-system.svc:8080/"
+	t.Setenv("AUTOPILOT_A2A_URL", "x") // restored after the test
+	if err := os.Unsetenv("AUTOPILOT_A2A_URL"); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentURL(); got != def {
+		t.Fatalf("unset: %q, want the default", got)
+	}
+	for in, want := range map[string]string{"": "", "  ": "", "http://a:1/": "http://a:1/"} {
+		t.Setenv("AUTOPILOT_A2A_URL", in)
+		if got := agentURL(); got != want {
+			t.Fatalf("%q: %q, want %q", in, got, want)
+		}
+	}
+}

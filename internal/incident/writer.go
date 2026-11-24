@@ -116,6 +116,9 @@ type Alert struct {
 // HumanOnly is status.error on an incident no model analyses: it says why it has no scripts.
 const HumanOnly = "This alert is analysed by a person: no model reads what it matched."
 
+// NoAgent is status.error on an incident opened while there is no analysis agent (Config.NoAgent).
+const NoAgent = "No analysis agent is installed here: a person looks into this incident."
+
 // Records returns the alert's current records: the rows matching where over the last seconds.
 type Records func(ctx context.Context, where string, seconds int) ([]compare.Row, error)
 
@@ -147,6 +150,11 @@ type Config struct {
 	// incident stays Analyzing meanwhile.
 	AnalysisRetries    int
 	AnalysisRetryDelay time.Duration
+	// NoAgent says there is no analysis agent to call. Every alert is then handled as one a person
+	// analyses (AnalysisHuman): one open incident per alert takes its firings, no model is called,
+	// and no reanalysis runs. Its incidents do not carry LabelAnalysis, so once there is an agent
+	// the alert's next analyzed incident supersedes them.
+	NoAgent bool
 }
 
 // Writer writes the Incidents of firing alerts.
@@ -381,6 +389,11 @@ func (w *Writer) stale(incident map[string]any, at time.Time) bool {
 	return ok && at.Sub(since) >= w.cfg.CoverWindow
 }
 
+// noModel says no model reads what the alert matched: no comparison and no RCA.
+func (w *Writer) noModel(alert Alert) bool {
+	return alert.HumanAnalysis || w.cfg.NoAgent
+}
+
 func (w *Writer) alertIncidents(ctx context.Context, ns, alert string) ([]map[string]any, error) {
 	return w.kube.List(ctx, ns, LabelAlert+"="+alert)
 }
@@ -412,7 +425,7 @@ func (w *Writer) pick(ctx context.Context, alert Alert, ns string, items []map[s
 		}
 	}
 	sort.SliceStable(open, func(a, b int) bool { return less(sortKey(open[b]), sortKey(open[a])) })
-	if alert.HumanAnalysis {
+	if w.noModel(alert) {
 		// Nothing to compare, and its records must not reach a model: the newest open incident
 		// takes every firing until a person closes it, however long ago it opened.
 		if len(open) > 0 {
@@ -647,7 +660,7 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 		ann[AnnotationSupersedesStale] = strings.Join(stale[:min(len(stale), maxSupersedes)], ",")
 	}
 	var failed []map[string]any
-	if !alert.HumanAnalysis {
+	if !w.noModel(alert) {
 		failed = supersedable(items)
 	}
 	if len(failed) > 0 {
@@ -680,8 +693,11 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 	// Unconditioned: the controller may already have touched the new object, and no other writer
 	// sets these fields yet.
 	first := map[string]any{"state": "Analyzing"}
-	if alert.HumanAnalysis {
+	switch {
+	case alert.HumanAnalysis:
 		first = map[string]any{"state": "Open", "error": HumanOnly, "completedAt": now}
+	case w.cfg.NoAgent:
+		first = map[string]any{"state": "Open", "error": NoAgent, "completedAt": now}
 	}
 	if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{"status": first}); err != nil {
 		return nil, len(stale), err
@@ -772,7 +788,8 @@ func (w *Writer) giveUp(ctx context.Context, ns, name string, st map[string]any,
 //     AnnotationRecoveries;
 //   - one it already ran again maxRecoveries times, or without a prompt, is closed as a failed
 //     analysis with Interrupted in error (see giveUp);
-//   - a person's incident gets the first write it missed: Open, with HumanOnly.
+//   - a person's incident gets the first write it missed: Open, with HumanOnly;
+//   - with no agent (Config.NoAgent), every other one becomes Open too, with NoAgent.
 //
 // An incident closed in spec is left to the incident controller.
 func (w *Writer) RecoverInterrupted(ctx context.Context) {
@@ -787,8 +804,12 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 			continue
 		}
 		name := str(metadata(incident), "name")
-		if humanIncident(incident) {
-			if err := w.patchStatus(ctx, ns, incident, map[string]any{"state": "Open", "error": HumanOnly,
+		if humanIncident(incident) || w.cfg.NoAgent {
+			why := NoAgent
+			if humanIncident(incident) {
+				why = HumanOnly
+			}
+			if err := w.patchStatus(ctx, ns, incident, map[string]any{"state": "Open", "error": why,
 				"completedAt": pyfmt.Isoformat(w.now())}); err != nil {
 				w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
 			}
@@ -943,7 +964,7 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 		return
 	}
 	span.SetAttributes(attrOpened.Bool(created != nil))
-	if created != nil && !alert.HumanAnalysis {
+	if created != nil && !w.noModel(alert) {
 		name := str(metadata(created), "name")
 		span.SetAttributes(attrIncident.String(name))
 		w.RunAnalysis(ctx, ns, name, prompt, name)

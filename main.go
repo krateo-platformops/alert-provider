@@ -52,6 +52,12 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+// agentURL is the RCA agent's A2A endpoint. "" when AUTOPILOT_A2A_URL is set and empty: there is no
+// agent (see incident.Config.NoAgent).
+func agentURL() string {
+	return strings.TrimSpace(getenv("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/"))
+}
+
 // envInt is an integer setting, at least min; an unparsable one stops the process.
 func envInt(key string, fallback, min int) int {
 	n, err := strconv.Atoi(strings.TrimSpace(getenv(key, strconv.Itoa(fallback))))
@@ -138,7 +144,7 @@ func run(log logging.Logger) error {
 	namespace := getenv("NAMESPACE", "krateo-system")
 	interval := time.Duration(envInt("RECONCILE_INTERVAL", 60, 0)) * time.Second
 	a2a := &incident.A2A{
-		URL: getenv("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/"),
+		URL: agentURL(),
 		// Above the agentgateway LLM route's 600s timeout: a slow model call is silence on the stream.
 		Timeout: time.Duration(envInt("A2A_TIMEOUT", 900, 0)) * time.Second,
 	}
@@ -152,6 +158,7 @@ func run(log logging.Logger) error {
 		CoverWindow:           envDuration("INCIDENT_COVER_WINDOW", "24h"),
 		AnalysisRetries:       envInt("ANALYSIS_RETRIES", 2, 0),
 		AnalysisRetryDelay:    time.Duration(envInt("ANALYSIS_RETRY_DELAY", 120, 1)) * time.Second,
+		NoAgent:               a2a.URL == "",
 	}
 	compareModelConfig := getenv("COMPARE_MODEL_CONFIG", "gemini-flash")
 	compareTimeout := time.Duration(envInt("COMPARE_TIMEOUT", 60, 0)) * time.Second
@@ -242,7 +249,11 @@ func run(log logging.Logger) error {
 
 	errs := make(chan error, 1)
 	go func() { errs <- webhook.Serve(ctx, addr, log) }()
-	log.Info(fmt.Sprintf("krateo-alert-provider listening on %s → RCA %s, compare ModelConfig %s/%s", addr, a2a.URL, namespace, compareModelConfig))
+	rca := a2a.URL
+	if writerConfig.NoAgent {
+		rca = "none (no agent: one open incident per alert, for a person)"
+	}
+	log.Info(fmt.Sprintf("krateo-alert-provider listening on %s → RCA %s, compare ModelConfig %s/%s", addr, rca, namespace, compareModelConfig))
 	go func() { errs <- mgr.Start(ctx) }()
 	select {
 	case err := <-errs:

@@ -87,7 +87,7 @@
         "autopilotA2aUrl": {
           "type": "string",
           "title": "RCA agent A2A URL",
-          "description": "A2A endpoint of the agent the webhook calls for root-cause analysis. Defaults to the in-cluster kagent A2A Service `http://incident-agent.krateo-system.svc:8080/` (kagent names the Service after the Agent's metadata.name).",
+          "description": "A2A endpoint of the agent the webhook calls for root-cause analysis. Defaults to the in-cluster kagent A2A Service `http://incident-agent.krateo-system.svc:8080/` (kagent names the Service after the Agent's metadata.name). Empty means there is no agent: one open incident per alert, for a person, and no analysis.",
           "default": "http://incident-agent.krateo-system.svc:8080/"
         },
         "compareModelConfig": {

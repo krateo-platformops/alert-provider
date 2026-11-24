@@ -12,6 +12,9 @@ config:
   # A2A endpoint of the agent the webhook calls for root-cause analysis. Default = incident-agent
   # (has the k8s/Helm/ClickHouse read tools an RCA needs; autopilot has neither). In-cluster kagent
   # A2A Service, named after the Agent's metadata.name -> incident-agent.<namespace>.svc:8080.
+  # Empty: there is no agent here. Each alert then has at most one open incident, saying so, which
+  # takes its firings until a person closes it; no model is called and no reanalysis runs. With a
+  # URL nobody answers, every firing instead opens an incident that fails and closes.
   autopilotA2aUrl: http://incident-agent.krateo-system.svc:8080/
   # kagent ModelConfig, in the release namespace, whose model judges which open incident of a
   # firing alert covers the alert's current records (internal/compare): one chat-completions call per
