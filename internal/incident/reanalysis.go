@@ -97,7 +97,9 @@ func (w *Writer) Reanalyze(ctx, run context.Context, ns, name string) (err error
 		for _, k := range analysisKeys {
 			st[k] = nil
 		}
-		if conds, ok := withoutCondition(status(incident)["conditions"], reproduced); ok {
+		conds, hadReproduced := withoutCondition(status(incident)["conditions"], reproduced)
+		conds, hadUnavailable := withoutCondition(conds, ConditionAnalysisUnavailable)
+		if hadReproduced || hadUnavailable {
 			st["conditions"] = conds
 		}
 		prompt := ReanalysisPrompt(str(spec(incident), "prompt"), incident, feedback, cause)
@@ -167,6 +169,12 @@ func withoutCondition(conds any, t string) ([]any, bool) {
 		out = append(out, c)
 	}
 	return out, len(out) != len(list)
+}
+
+// withCondition is conds with c in place of any condition of its type.
+func withCondition(conds any, c map[string]any) []any {
+	out, _ := withoutCondition(conds, str(c, "type"))
+	return append(out, c)
 }
 
 // A reanalysis request's cause: a person (the portal's Re-run analysis; also when absent), or

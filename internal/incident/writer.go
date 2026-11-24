@@ -116,8 +116,16 @@ type Alert struct {
 // HumanOnly is status.error on an incident no model analyses: it says why it has no scripts.
 const HumanOnly = "This alert is analysed by a person: no model reads what it matched."
 
-// NoAgent is status.error on an incident opened while there is no analysis agent (Config.NoAgent).
-const NoAgent = "No analysis agent is installed here: a person looks into this incident."
+// ConditionAnalysisUnavailable, on an incident that has no analysis, is True (ReasonNoAgent) while
+// there is no agent to write one (Config.NoAgent): nothing failed, so status.error is empty. It
+// turns False (ReasonAgentAvailable) at the first start with an agent. The portal keys on it.
+const (
+	ConditionAnalysisUnavailable = "AnalysisUnavailable"
+	ReasonNoAgent                = "NoAnalysisAgent"
+	ReasonAgentAvailable         = "AnalysisAgentAvailable"
+	messageNoAgent               = "No analysis agent is installed here: a person looks into this incident."
+	messageAgentAvailable        = "An analysis agent is installed: this incident can be analyzed."
+)
 
 // Records returns the alert's current records: the rows matching where over the last seconds.
 type Records func(ctx context.Context, where string, seconds int) ([]compare.Row, error)
@@ -296,12 +304,63 @@ func closedFailed(obj map[string]any) bool {
 	return annotations(obj)[AnnotationClosedReason] == ClosedAnalysisFailed
 }
 
-// openFailed says the incident is Open with an error and no scripts: an RCA that failed before
-// failed analyses were closed, or one whose close was refused. A person's incident is not one.
+// openFailed says the incident is Open with no scripts and either an error, from an RCA that failed
+// before failed analyses were closed or whose close was refused, or ConditionAnalysisUnavailable,
+// from an incident opened while there was no agent. A person's incident is not one.
 func openFailed(obj map[string]any) bool {
 	s, _ := state(obj)
 	st := status(obj)
-	return s == "Open" && !closedInSpec(obj) && !humanIncident(obj) && st["howToFix"] == nil && pyfmt.Truthy(st["error"])
+	_, unavailable := condition(st, ConditionAnalysisUnavailable)
+	return s == "Open" && !closedInSpec(obj) && !humanIncident(obj) && st["howToFix"] == nil &&
+		(unavailable || pyfmt.Truthy(st["error"]))
+}
+
+// openForAPerson opens an incident that has no analysis, with ConditionAnalysisUnavailable True.
+// It is conditioned on the version read: a merge patch replaces the whole list of conditions, and
+// the incident controller may have set some. An incident that moved on is left alone.
+func (w *Writer) openForAPerson(ctx context.Context, ns, name string) error {
+	for range writeAttempts {
+		incident, err := w.kube.Get(ctx, ns, name)
+		if err != nil {
+			return err
+		}
+		if !analyzingOrUnset(incident) || closedInSpec(incident) {
+			return nil
+		}
+		now := pyfmt.Isoformat(w.now())
+		err = w.patchStatus(ctx, ns, incident, map[string]any{"state": "Open", "completedAt": now,
+			"conditions": withCondition(status(incident)["conditions"], unavailable(true, now))})
+		if code(err) == 409 {
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("incident %s/%s: no status write succeeded in %d attempts", ns, name, writeAttempts)
+}
+
+// unavailable is ConditionAnalysisUnavailable: True when there is no agent.
+func unavailable(noAgent bool, at string) map[string]any {
+	c := map[string]any{"type": ConditionAnalysisUnavailable, "status": "False", "reason": ReasonAgentAvailable,
+		"message": messageAgentAvailable, "lastTransitionTime": at}
+	if noAgent {
+		c["status"], c["reason"], c["message"] = "True", ReasonNoAgent, messageNoAgent
+	}
+	return c
+}
+
+// refreshUnavailable makes the ConditionAnalysisUnavailable of an open incident say whether there is
+// an agent now. An incident without the condition is left alone.
+func (w *Writer) refreshUnavailable(ctx context.Context, ns string, incident map[string]any) {
+	want := unavailable(w.cfg.NoAgent, pyfmt.Isoformat(w.now()))
+	c, ok := condition(status(incident), ConditionAnalysisUnavailable)
+	if !ok || c["status"] == want["status"] || ended(incident) {
+		return
+	}
+	if err := w.patchStatus(ctx, ns, incident, map[string]any{
+		"conditions": withCondition(status(incident)["conditions"], want)}); err != nil {
+		w.log.Info(fmt.Sprintf("[incident] %s/%s: %s not refreshed (%s)", ns, str(metadata(incident), "name"),
+			ConditionAnalysisUnavailable, err))
+	}
 }
 
 func analyzingOrUnset(obj map[string]any) bool {
@@ -697,7 +756,11 @@ func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt
 	case alert.HumanAnalysis:
 		first = map[string]any{"state": "Open", "error": HumanOnly, "completedAt": now}
 	case w.cfg.NoAgent:
-		first = map[string]any{"state": "Open", "error": NoAgent, "completedAt": now}
+		if err := w.openForAPerson(ctx, ns, name); err != nil {
+			return nil, len(stale), err
+		}
+		logging.WithContext(w.log, ctx).Info(fmt.Sprintf("[incident] %s/%s: opened, no analysis agent", ns, name))
+		return created, len(stale), nil
 	}
 	if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{"status": first}); err != nil {
 		return nil, len(stale), err
@@ -789,7 +852,9 @@ func (w *Writer) giveUp(ctx context.Context, ns, name string, st map[string]any,
 //   - one it already ran again maxRecoveries times, or without a prompt, is closed as a failed
 //     analysis with Interrupted in error (see giveUp);
 //   - a person's incident gets the first write it missed: Open, with HumanOnly;
-//   - with no agent (Config.NoAgent), every other one becomes Open too, with NoAgent.
+//   - with no agent (Config.NoAgent), every other one becomes Open too (see openForAPerson).
+//
+// An open incident from a start with no agent has its ConditionAnalysisUnavailable made current.
 //
 // An incident closed in spec is left to the incident controller.
 func (w *Writer) RecoverInterrupted(ctx context.Context) {
@@ -801,15 +866,18 @@ func (w *Writer) RecoverInterrupted(ctx context.Context) {
 	}
 	for _, incident := range items {
 		if !analyzingOrUnset(incident) || closedInSpec(incident) {
+			w.refreshUnavailable(ctx, ns, incident)
 			continue
 		}
 		name := str(metadata(incident), "name")
-		if humanIncident(incident) || w.cfg.NoAgent {
-			why := NoAgent
-			if humanIncident(incident) {
-				why = HumanOnly
+		if w.cfg.NoAgent && !humanIncident(incident) {
+			if err := w.openForAPerson(ctx, ns, name); err != nil {
+				w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
 			}
-			if err := w.patchStatus(ctx, ns, incident, map[string]any{"state": "Open", "error": why,
+			continue
+		}
+		if humanIncident(incident) {
+			if err := w.patchStatus(ctx, ns, incident, map[string]any{"state": "Open", "error": HumanOnly,
 				"completedAt": pyfmt.Isoformat(w.now())}); err != nil {
 				w.log.Info(fmt.Sprintf("[incident] %s/%s: recovery skipped (%s)", ns, name, err))
 			}
